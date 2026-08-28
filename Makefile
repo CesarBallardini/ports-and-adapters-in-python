@@ -30,14 +30,20 @@ test: ## Run the test suite (unit + integration + acceptance; e2e excluded by de
 test-unit: ## Run only the unit tests (pure hexagon, no I/O)
 	uv run --frozen pytest -m unit
 
-test-bdd: ## Run only the BDD/acceptance tests (pytest-bdd)
-	uv run --frozen pytest -m bdd
+# pytest exits 5 when a marker selects nothing, and make reports that as a failure. For a
+# tier that has not been written yet this is noise, not a signal. Applied only to the tiers
+# that are genuinely still empty: delete it from a target the moment that tier gets its
+# first test, so that an empty tier goes back to being an error rather than a silent pass.
+ALLOW_EMPTY_TIER = || test $$? -eq 5
+
+test-bdd: ## Run only the BDD/acceptance tests (pytest-bdd) -- none written yet
+	uv run --frozen pytest -m bdd $(ALLOW_EMPTY_TIER)
 
 test-integration: ## Run only the integration tests (real SQLite adapter + port contract)
 	uv run --frozen pytest -m integration
 
-test-e2e: ## Run end-to-end tests (spawns the real CLI and a real uvicorn server)
-	uv run --frozen pytest -m e2e
+test-e2e: ## Run end-to-end tests (spawns the real CLI and a real uvicorn server) -- none written yet
+	uv run --frozen pytest -m e2e $(ALLOW_EMPTY_TIER)
 
 security: ## Run security scans (bandit SAST + pip-audit + OSV-Scanner SCA)
 	uv run --frozen bandit -c bandit.yaml -r src
