@@ -36,8 +36,16 @@ jobs:
       # about which ruff version or which rules applied. It also runs bandit and
       # import-linter, which are local hooks. no-commit-to-branch is skipped
       # because CI legitimately builds with the default branch checked out.
+      # markdown-link-check is skipped here and runs in links.yml instead. Link
+      # liveness depends on third-party sites, so it is not a deterministic
+      # check: ivarjacobson.com intermittently answers a runner with 403 while
+      # serving the same URL fine elsewhere, and link-check retries only a 429.
+      # Gating every pull request on that makes unrelated work go red, which
+      # trains people to re-run a red build instead of reading it. The hook
+      # still runs locally on the markdown you touch, and the scheduled job
+      # catches rot in the files nobody touched.
       - name: Run pre-commit hooks
-        run: SKIP=no-commit-to-branch uv run --frozen pre-commit run --all-files
+        run: SKIP=no-commit-to-branch,markdown-link-check uv run --frozen pre-commit run --all-files
 
       # The type checkers are not pre-commit hooks -- they need the fully synced
       # project environment to resolve imports, not a hook-managed one -- so
