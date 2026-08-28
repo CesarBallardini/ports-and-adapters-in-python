@@ -1,0 +1,47 @@
+# The dependency rule, made executable. See ADR-0003 and ADR-0004.
+#
+# Two contracts, because one is not enough: the layers contract catches an inner
+# layer importing an outer one, and the forbidden contract catches an inner layer
+# importing a framework directly -- which satisfies the layering while destroying
+# the very property the layering exists to protect.
+
+[importlinter]
+root_package = academy
+# Required so the forbidden contract can see third-party imports, not just ours.
+include_external_packages = True
+
+[importlinter:contract:layers]
+name = Dependencies point inward only
+type = layers
+layers =
+    academy.adapters
+    academy.application
+    academy.domain
+
+[importlinter:contract:domain-and-application-are-framework-free]
+name = The hexagon imports no framework
+type = forbidden
+source_modules =
+    academy.domain
+    academy.application
+forbidden_modules =
+    fastapi
+    starlette
+    pydantic
+    jinja2
+    sqlalchemy
+    alembic
+    openpyxl
+    httpx
+    uvicorn
+    boto3
+
+[importlinter:contract:domain-is-independent]
+name = The domain depends on nothing of ours but itself
+type = forbidden
+source_modules =
+    academy.domain
+forbidden_modules =
+    academy.application
+    academy.adapters
+    academy.config

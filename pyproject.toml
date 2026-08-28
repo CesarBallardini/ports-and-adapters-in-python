@@ -1,0 +1,82 @@
+[project]
+name = "academy"
+version = "0.1.0"
+description = "A worked example of an application built with ports and adapters (hexagonal architecture) in Python."
+readme = "README.md"
+requires-python = ">=3.14"
+
+# The hexagon -- domain plus application -- depends on nothing but the standard
+# library, and ADR-0004 enforces that. Every third-party package below belongs to
+# one adapter family, which is why they are optional extras rather than hard
+# dependencies: the core is installable and usable without any of them.
+dependencies = []
+
+[project.optional-dependencies]
+web = [
+    "fastapi>=0.115",
+    "uvicorn>=0.34",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+    "itsdangerous>=2.2",
+]
+persistence = [
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "aiosqlite>=0.20",
+    "asyncpg>=0.30",
+]
+spreadsheet = [
+    "openpyxl>=3.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/academy"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-cov",
+    "pytest-xdist",
+    "pytest-bdd",
+    "pytest-asyncio",
+    "httpx",
+    "factory-boy",
+    "faker",
+    "ruff",
+    "pyright",
+    "pyrefly",
+    "import-linter",
+    "bandit[toml]",
+    "pip-audit",
+    "pre-commit",
+]
+deploy = [
+    "docker",
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers -m 'not e2e and not snapshot'"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+bdd_features_base_dir = "tests/acceptance/features"
+filterwarnings = [
+    # pytest-bdd's gherkin parser calls re.split(..., maxsplit) positionally,
+    # which Python 3.14 deprecates. Third-party code we don't own -- scoped to
+    # that module so our own deprecations still surface.
+    "ignore:'maxsplit' is passed as positional argument:DeprecationWarning:gherkin.gherkin_line",
+    # pytest-bdd registers step fixtures via pytest's old fixture-scoping API,
+    # which pytest 9 deprecates. Third-party compatibility lag; matched by message.
+    "ignore:Passing baseid to FixtureDef is deprecated",
+    "ignore:Passing nodeid to _register_fixture is deprecated",
+]
+markers = [
+    "unit: fast tests with no external dependencies",
+    "integration: in-process API tests (httpx AsyncClient + ASGITransport) against a real database",
+    "bdd: behavior-driven acceptance tests (pytest-bdd, Gherkin)",
+    "e2e: end-to-end tests against a running instance (uvicorn over a socket, or the real CLI)",
+    "snapshot: snapshot tests, excluded by default, run on demand",
+]

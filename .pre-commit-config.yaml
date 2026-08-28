@@ -1,0 +1,51 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-json
+      - id: check-toml
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: mixed-line-ending
+
+  - repo: local
+    hooks:
+      # ruff and bandit run through `uv run --frozen` (local hooks), not the
+      # astral-sh/ruff-pre-commit repo, so they always use the exact version
+      # pinned in uv.lock -- a separately pinned pre-commit-hook revision can
+      # drift from what `make lint`/CI actually run.
+      - id: ruff-check
+        name: ruff check --fix
+        entry: uv run --frozen ruff check --fix
+        language: system
+        types: [python]
+
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --frozen ruff format
+        language: system
+        types: [python]
+
+      - id: uv-lock-check
+        name: uv lock --check
+        description: fail if uv.lock is out of sync with pyproject.toml
+        entry: uv lock --check
+        language: system
+        pass_filenames: false
+
+      - id: bandit
+        name: bandit (security)
+        entry: uv run --frozen bandit -c bandit.yaml -r src
+        language: system
+        pass_filenames: false
+
+      # The whole point of this repo. A dependency-rule violation is a design
+      # bug, and design bugs that only live in a README get reintroduced --
+      # so the rule is executable and runs before every commit.
+      - id: architecture
+        name: dependency rule (import-linter)
+        entry: uv run --frozen lint-imports
+        language: system
+        pass_filenames: false

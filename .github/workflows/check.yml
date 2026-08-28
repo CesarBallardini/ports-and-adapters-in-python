@@ -1,0 +1,19 @@
+name: check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --all-groups --all-extras --frozen
+      - run: uv run --frozen ruff check .
+      - run: uv run --frozen ruff format --check .
+      - run: uv run --frozen pyright
+      # The dependency rule is enforced in CI, not just in pre-commit: a hook
+      # can be skipped with --no-verify, a required check cannot.
+      - run: uv run --frozen lint-imports

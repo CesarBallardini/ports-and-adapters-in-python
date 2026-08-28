@@ -1,0 +1,13 @@
+# Bandit configuration (SAST -- static security analysis).
+#
+# Findings are baselined so only NEW issues fail CI/pre-commit, not ones
+# already reviewed and accepted. Regenerate the baseline after reviewing
+# and consciously accepting a finding:
+#
+#   uv run bandit -c bandit.yaml -r src -f json -o bandit-baseline.json
+#
+exclude_dirs:
+  - tests
+  - .venv
+  - build
+  - dist

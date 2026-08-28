@@ -1,0 +1,44 @@
+line-length = 119
+target-version = "py314"
+
+# The rule set is kept identical to multi-tenant-python's, because the domain is
+# copied from it verbatim (ADR-0002). Adding a rule here that the domain does not
+# satisfy would force a choice between editing the domain and carrying a
+# per-file-ignore for it -- and both would undermine the point of the copy.
+[lint]
+select = [
+    "E", "F", "W",  # pycodestyle + pyflakes
+    "I",            # isort
+    "N",            # pep8-naming
+    "UP",           # pyupgrade
+    "B",            # flake8-bugbear
+    "S",            # flake8-bandit
+    "SIM",          # flake8-simplify
+    "RET",          # flake8-return
+    "PIE",          # flake8-pie
+    "YTT",          # flake8-2020
+    "D",            # pydocstyle
+]
+ignore = [
+    "D203",  # one-blank-line-before-class -- conflicts with D211
+    "D213",  # multi-line-summary-second-line -- conflicts with D212
+]
+
+[lint.pydocstyle]
+convention = "google"
+
+[lint.mccabe]
+max-complexity = 15
+
+[lint.per-file-ignores]
+# assert is the idiomatic way to write a test assertion; it's disallowed
+# in application code because `python -O` strips asserts at runtime.
+"tests/**" = ["S101", "D"]
+# The e2e tests exist precisely to launch the real CLI and the real HTTP
+# server as separate processes, so the "don't call subprocess" rules are
+# inapplicable here by construction. Commands are built as argv lists from
+# sys.executable -- never a shell string, never user input.
+"tests/e2e/**" = ["S101", "D", "S603"]
+
+[format]
+quote-style = "single"

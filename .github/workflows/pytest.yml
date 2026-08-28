@@ -1,0 +1,42 @@
+name: pytest
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # Default run: SQLite, nothing to install. This is the suite a reader gets
+  # locally with `make test` (ADR-0007).
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --all-groups --all-extras --frozen
+      - run: uv run --frozen pytest -n auto --cov=academy --cov-report=xml
+
+  # The same integration and persistence suites, against the database this
+  # application actually targets. SQLite is permissive about types, lenient
+  # about constraints and different about transaction semantics, so an adapter
+  # only ever exercised against it is an untested adapter (ADR-0007).
+  pytest-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: academy
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      ACADEMY_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/academy
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --all-groups --all-extras --frozen
+      - run: uv run --frozen pytest -m integration
