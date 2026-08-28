@@ -1,0 +1,89 @@
+site_name: ports-and-adapters-in-python
+site_description: A worked example of ports and adapters (hexagonal architecture) in Python.
+repo_url: https://github.com/CesarBallardini/ports-and-adapters-in-python
+repo_name: CesarBallardini/ports-and-adapters-in-python
+
+# Warnings are failures. A renamed function silently orphans an API anchor
+# otherwise, and the docs rot without the build ever going red. It also means
+# every page under docs/ has to appear in the nav below, which is the property
+# that keeps a new ADR from being written and then never linked.
+strict: true
+
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - navigation.top
+    - content.code.copy
+  palette:
+    - scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+plugins:
+  - search
+  - autorefs
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: google
+            show_root_heading: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            separate_signature: true
+            signature_crossrefs: true
+            members_order: source
+
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  # One superfences entry, not two: the diagrams are Mermaid, inline in the
+  # markdown, so they have to survive the fence untouched and be handed to
+  # mermaid.js rather than syntax-highlighted.
+  #
+  # The `!!python/name:` tag is why mkdocs.yml is excluded from the check-yaml
+  # hook -- it is a pymdownx convention that safe_load cannot resolve. Nothing
+  # is lost: `mkdocs build --strict` validates this file far more thoroughly,
+  # and it runs in CI and in `make docs`.
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+nav:
+  - Home: README.md
+  - Design:
+      - Description: 01-description.md
+      - Actors and use cases: 02-actors-and-use-cases.md
+      - Sequence diagrams: 03-sequence-diagrams.md
+      - State diagrams: 04-state-diagrams.md
+      - Domain model: 05-domain-model.md
+      - Class diagram: 06-class-diagram.md
+  - Decisions:
+      - Index: decisions/README.md
+      - ADR-0001 Record architecture decisions: decisions/0001-record-architecture-decisions.md
+      - ADR-0002 Reuse the academy domain: decisions/0002-reuse-the-academy-domain.md
+      - ADR-0003 Ports and adapters layering: decisions/0003-ports-and-adapters-layering.md
+      - ADR-0004 Enforce the dependency rule: decisions/0004-enforce-the-dependency-rule.md
+      - ADR-0005 Async I/O ports, sync CPU ports: decisions/0005-async-io-ports-sync-cpu-ports.md
+      - ADR-0006 SQLAlchemy imperative mapping: decisions/0006-sqlalchemy-imperative-mapping.md
+      - ADR-0007 PostgreSQL in CI, SQLite in development: decisions/0007-postgresql-in-ci-sqlite-in-development.md
+      - ADR-0008 One spreadsheet port, two adapters: decisions/0008-one-spreadsheet-port-two-adapters.md
+      - ADR-0009 Imports inline or queued by size: decisions/0009-imports-inline-or-queued-by-size.md
+      - ADR-0010 Session cookie for web, bearer for API: decisions/0010-session-cookie-web-bearer-api.md
+      - ADR-0011 htmx for the web adapter: decisions/0011-htmx-for-the-web-adapter.md
+      - ADR-0012 Domain error to HTTP status table: decisions/0012-domain-error-to-http-status-table.md
+      - ADR-0013 Testing strategy: decisions/0013-testing-strategy.md
+      - ADR-0014 In-memory adapters and contract tests: decisions/0014-in-memory-adapters-and-contract-tests.md
+  - API reference: reference.md

@@ -1,0 +1,18 @@
+# Coverage configuration -- deliberately its own file rather than a
+# [tool.coverage.*] table in pyproject.toml, so it sits alongside the other
+# quality-gate configs (ruff.toml, bandit.yaml, pyrightconfig.json, pyrefly.toml)
+# and can be passed explicitly with --cov-config from any working directory.
+#
+# fail_under is a hard gate, not a report: `pytest --cov` exits non-zero below
+# it, so a coverage drop fails CI the same way a lint or type error does.
+#
+# The floor is 70 while the hexagon is still being built outward. Measured
+# coverage is well above it (89% at the time of writing), and the gap is
+# deliberate: the uncovered lines are adapter methods and port bodies that the
+# contract suite has not reached yet, and a floor set at today's number would
+# fail the moment a new unexercised adapter lands. Raise it as each phase closes.
+
+[report]
+fail_under = 70
+show_missing = true
+precision = 0

@@ -1,0 +1,71 @@
+name: release
+
+# Releasing is tagging: the version lives in the git tag and
+# uv-dynamic-versioning derives the package version from it, so there is no
+# version to bump in a tracked file and no release commit to review.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: "Version bump type"
+        required: false
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+        default: "auto"
+
+permissions: {}
+
+jobs:
+  tag-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # cz reads the whole history to pick the increment
+          fetch-tags: true
+
+      - uses: ./.github/actions/setup-python
+        with:
+          sync-args: "--group dev --frozen"
+
+      # Exit code 21 is commitizen's NoneIncrementExit: no commit since the last
+      # tag warrants a release. --no-raise turns that into a clean no-op rather
+      # than a red build.
+      - name: Resolve the next version
+        env:
+          BUMP_TYPE: ${{ inputs.bump_type }}
+        run: |
+          set -euo pipefail
+          if [ "$BUMP_TYPE" = "auto" ]; then
+            NEW_VERSION=$(uv run --frozen cz --no-raise 21 bump --get-next --yes)
+          else
+            NEW_VERSION=$(uv run --frozen cz --no-raise 21 bump --get-next --yes --increment "$BUMP_TYPE")
+          fi
+
+          if [ -z "$NEW_VERSION" ]; then
+            echo "No release-worthy commit since the last tag; nothing to do."
+            exit 1
+          fi
+
+          echo "Next version: $NEW_VERSION"
+          echo "NEW_VERSION=$NEW_VERSION" >> "$GITHUB_ENV"
+
+      - name: Configure the git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Tag and push
+        run: |
+          set -euo pipefail
+          git tag "v$NEW_VERSION"
+          git push origin "v$NEW_VERSION"
+          echo "Released v$NEW_VERSION" >> "$GITHUB_STEP_SUMMARY"

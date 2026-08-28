@@ -1,21 +1,68 @@
+# `pre-commit install` must wire the commit-msg stage too, not just pre-commit,
+# or the Conventional Commits check below is silently never run.
+default_install_hook_types:
+  - pre-commit
+  - commit-msg
+  - pre-push
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
       - id: check-added-large-files
+      - id: check-ast
+      - id: check-case-conflict
+      - id: check-docstring-first
       - id: check-json
+      - id: check-merge-conflict
+      - id: check-symlinks
       - id: check-toml
+      - id: check-vcs-permalinks
+      # mkdocs.yml is excluded because it carries a `!!python/name:` tag for the
+      # Mermaid custom fence, which safe_load cannot construct. `mkdocs build
+      # --strict` validates that file properly, in CI and in `make docs`.
       - id: check-yaml
+        exclude: ^mkdocs\.yml$
+      - id: detect-private-key
       - id: end-of-file-fixer
       - id: trailing-whitespace
       - id: mixed-line-ending
+
+      # Work lands on a branch and through a PR, which is what the CI and
+      # security gates key off. Both names are guarded: this repository was
+      # renamed from `master` to `main`, and a guard that names only the
+      # current one silently stops protecting anything after a rename.
+      # CI runs pre-commit with SKIP=no-commit-to-branch, since a build
+      # legitimately has the default branch checked out.
+      - id: no-commit-to-branch
+        args: [--branch=main, --branch=master]
+
+  # gitleaks is a Go binary rather than a PyPI package, so it comes from its
+  # own upstream repo instead of the `uv run --frozen` local hooks below.
+  #
+  # This hook scans staged changes only; the whole-tree scan is the gitleaks
+  # job in .github/workflows/security.yml, pinned to this same version.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+
+  # -c points at .markdown-link-check.json, which currently ignores this
+  # repository's own GitHub URLs because the remote does not exist yet. That
+  # exclusion is meant to be deleted the moment it does -- see the file.
+  - repo: https://github.com/tcort/markdown-link-check
+    rev: v3.15.0
+    hooks:
+      - id: markdown-link-check
+        args: [-q, -c, .markdown-link-check.json]
 
   - repo: local
     hooks:
       # ruff and bandit run through `uv run --frozen` (local hooks), not the
       # astral-sh/ruff-pre-commit repo, so they always use the exact version
       # pinned in uv.lock -- a separately pinned pre-commit-hook revision can
-      # drift from what `make lint`/CI actually run.
+      # drift from what `make lint`/CI actually run. commitizen is local for
+      # the same reason.
       - id: ruff-check
         name: ruff check --fix
         entry: uv run --frozen ruff check --fix
@@ -49,3 +96,27 @@ repos:
         entry: uv run --frozen lint-imports
         language: system
         pass_filenames: false
+
+      # Conventional Commits. A squash merge takes the PR *title* as the commit
+      # subject, so the same check runs over the title in
+      # .github/workflows/validate_pr_title.yaml.
+      - id: commitizen
+        name: commitizen (conventional commit message)
+        entry: uv run --frozen cz check --commit-msg-file
+        language: system
+        stages: [commit-msg]
+
+      # Runs at push time, not commit time: the branch name is what GitHub
+      # derives a default pull request title from, and that title is what
+      # validate-pr-title rejects. Catching it here costs one push instead of
+      # one round trip through CI.
+      - id: check-branch-name
+        name: branch name and PR title convention
+        entry: .pre-commit-hooks/check-branch-name.sh
+        language: script
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true
+        # pre-commit swallows stdout on success, which would hide the pull
+        # request title advice -- the whole point of the hook.
+        verbose: true

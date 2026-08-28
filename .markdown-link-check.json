@@ -1,0 +1,30 @@
+{
+  "_comment": [
+    "user_agent: a browser User-Agent for every link checked. Sites increasingly",
+    "answer an unrecognised agent with 403 -- ivarjacobson.com is the one that",
+    "forced this, serving 403 to the default agent and 200 to a browser -- and a",
+    "403 that only a bot ever sees is not a dead link. Setting the agent is the",
+    "accurate fix: widening aliveStatusCodes to accept 403, or ignoring each",
+    "offending URL one by one, would suppress genuine breakage instead.",
+    "",
+    "It must be the top-level `user_agent` key, NOT an httpHeaders entry.",
+    "link-check hands needle a `user_agent` option that defaults to",
+    "'link-check/<version>', and needle applies that over anything set through",
+    "headers -- so a User-Agent placed in httpHeaders is silently discarded and",
+    "the 403 persists. This was verified both ways.",
+    "",
+    "TEMPORARY: the ignorePatterns entry below. This repository has not been",
+    "pushed to GitHub yet, so every link to its own GitHub URL -- the CI badges",
+    "in README.md above all -- resolves to a 404 and fails the hook on every",
+    "commit. Delete that entry as soon as the remote exists; leaving it in place",
+    "would hide a genuinely broken link to our own docs, which is exactly what",
+    "the hook is for."
+  ],
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  "ignorePatterns": [
+    { "pattern": "^https://github\\.com/CesarBallardini/ports-and-adapters-in-python" }
+  ],
+  "retryOn429": true,
+  "retryCount": 3,
+  "aliveStatusCodes": [200, 206]
+}

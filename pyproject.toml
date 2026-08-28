@@ -1,6 +1,8 @@
 [project]
 name = "academy"
-version = "0.1.0"
+# The version is derived from the newest git tag by uv-dynamic-versioning, so
+# `cz bump` (version_provider = "scm") and the built wheel can never disagree.
+dynamic = ["version"]
 description = "A worked example of an application built with ports and adapters (hexagonal architecture) in Python."
 readme = "README.md"
 requires-python = ">=3.14"
@@ -30,8 +32,15 @@ spreadsheet = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "uv-dynamic-versioning"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+# There are no tags yet. Without a fallback the build fails outright on a
+# repository that has never been released, which would make `uv sync` -- and so
+# every make target -- depend on someone having tagged first.
+fallback-version = "0.0.0"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/academy"]
@@ -43,6 +52,8 @@ dev = [
     "pytest-xdist",
     "pytest-bdd",
     "pytest-asyncio",
+    "pytest-mock",
+    "pytest-timeout",
     "httpx",
     "factory-boy",
     "faker",
@@ -52,24 +63,62 @@ dev = [
     "import-linter",
     "bandit[toml]",
     "pip-audit",
+    "pip-licenses",
     "pre-commit",
+    "commitizen",
 ]
 deploy = [
     "docker",
 ]
+doc = [
+    # MkDocs 2.0 removes the plugin system outright, which would take
+    # mkdocstrings, autorefs and mike with it, and moves config from YAML to
+    # TOML with no migration path. Bump deliberately, not incidentally.
+    # See https://squidfunk.github.io/mkdocs-material/blog/2026/02/18/mkdocs-2.0/
+    #
+    # 9.7.5 is the first Material release that caps mkdocs <2 itself, so the
+    # floor here is what makes the protection intrinsic rather than depending
+    # on the explicit cap above.
+    "mkdocs>=1.6,<2",
+    "mkdocs-material>=9.7.5",
+    "mkdocstrings[python]>=0.27",
+    "mkdocs-autorefs>=1.4",
+    "mike>=2.1",
+]
+
+[tool.commitizen]
+# Conventional Commits, enforced in two places: the commit-msg pre-commit hook
+# on every local commit, and `cz check` over the PR title in CI (a squash merge
+# takes the PR title as the commit subject, so that is the one that lands).
+name = "cz_conventional_commits"
+tag_format = "v$version"
+version_scheme = "pep440"
+# The git tag is the single source of truth for the version -- nothing to bump
+# in a tracked file, so a release is a tag and not a commit.
+version_provider = "scm"
+update_changelog_on_bump = false
 
 [tool.pytest.ini_options]
-addopts = "-ra --strict-markers -m 'not e2e and not snapshot'"
+addopts = "-ra --strict-markers --durations=20 -m 'not e2e and not snapshot'"
 testpaths = ["tests"]
 asyncio_mode = "auto"
 bdd_features_base_dir = "tests/acceptance/features"
+# Warnings are failures, like every other gate here -- a DeprecationWarning is
+# a future breakage that has already been diagnosed for us, and the only way it
+# stays visible is if it stops the build.
+#
+# Each ignore below must name a specific message, never a bare category, and
+# must say why it cannot simply be fixed. Anything not listed is an error.
 filterwarnings = [
+    "error",
     # pytest-bdd's gherkin parser calls re.split(..., maxsplit) positionally,
-    # which Python 3.14 deprecates. Third-party code we don't own -- scoped to
-    # that module so our own deprecations still surface.
-    "ignore:'maxsplit' is passed as positional argument:DeprecationWarning:gherkin.gherkin_line",
+    # which Python 3.14 deprecates. No upgrade path: pytest-bdd 8.1.0 is the
+    # latest release and pins gherkin-official <30, while the 29.x line only
+    # ever had 29.0.0. Revisit when pytest-bdd widens that pin.
+    "ignore:'maxsplit' is passed as positional argument:DeprecationWarning",
     # pytest-bdd registers step fixtures via pytest's old fixture-scoping API,
-    # which pytest 9 deprecates. Third-party compatibility lag; matched by message.
+    # which pytest 9 deprecates. Same lag, same package, and equally not ours
+    # to fix; matched by message so an unrelated deprecation still surfaces.
     "ignore:Passing baseid to FixtureDef is deprecated",
     "ignore:Passing nodeid to _register_fixture is deprecated",
 ]
@@ -80,3 +129,8 @@ markers = [
     "e2e: end-to-end tests against a running instance (uvicorn over a socket, or the real CLI)",
     "snapshot: snapshot tests, excluded by default, run on demand",
 ]
+# A hung test should fail the build, not sit there until the job timeout kills
+# it with no useful output. timeout_func_only keeps the clock on the test body,
+# so a slow fixture (a container coming up) is not charged against it.
+timeout = 300
+timeout_func_only = true

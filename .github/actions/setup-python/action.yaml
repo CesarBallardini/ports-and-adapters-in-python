@@ -1,0 +1,31 @@
+name: Set up the Python environment
+description: Install uv and sync the project environment from the committed lockfile.
+
+# Python itself is not installed with actions/setup-python: uv provisions the
+# interpreter named in .python-version as part of `uv sync`, so the runner's
+# preinstalled Pythons are irrelevant and CI matches a local `make install`.
+
+inputs:
+  uv-version:
+    description: Version of uv to install.
+    required: false
+    default: "0.11.10"
+  sync-args:
+    description: Arguments passed to `uv sync`.
+    required: false
+    # --all-extras as well as --all-groups: the hexagon core deliberately has no
+    # dependencies, so every adapter dependency is an *extra* rather than a
+    # group. Syncing groups alone leaves fastapi, sqlalchemy and openpyxl out,
+    # and the adapters that need them fail to import.
+    default: "--all-groups --all-extras --frozen"
+
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/install-uv
+      with:
+        uv-version: ${{ inputs.uv-version }}
+
+    - name: Sync the environment
+      shell: bash
+      run: uv sync ${{ inputs.sync-args }}

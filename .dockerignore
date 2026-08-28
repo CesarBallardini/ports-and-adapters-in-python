@@ -1,6 +1,7 @@
+.venv/
+.git/
 __pycache__/
 *.py[cod]
-.venv/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
@@ -8,10 +9,7 @@ __pycache__/
 htmlcov/
 .coverage
 coverage.xml
+site/
 dist/
 build/
 *.egg-info/
-*.db
-*.sqlite3
-site/
-.pre-commit.yaml

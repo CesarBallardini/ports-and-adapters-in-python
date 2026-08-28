@@ -28,12 +28,13 @@ from academy.domain.people.age_of_majority import AgeOfMajority
 from academy.domain.people.person import Person
 from academy.domain.shared.ids import GuardianshipId, PersonId, SectionId
 
+# What the store answers before an administrator has configured anything. The
+# ``ConfigurationRepository`` port forbids returning ``None``: every guardianship check depends
+# on this value, and a system that cannot answer it can answer nothing about access.
+#
+# A comment rather than an attribute docstring: the check-docstring-first hook reads a string
+# literal after a module-level assignment as a second module docstring.
 DEFAULT_AGE_OF_MAJORITY = AgeOfMajority(18)
-"""What the store answers before an administrator has configured anything.
-
-The ``ConfigurationRepository`` port forbids returning ``None``: every guardianship check
-depends on this value, and a system that cannot answer it can answer nothing about access.
-"""
 
 
 @dataclass(frozen=True, slots=True)
