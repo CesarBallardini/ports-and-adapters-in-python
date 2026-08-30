@@ -33,7 +33,13 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Final
+from typing import Final, Self
+
+# The environment, as everything here reads it: names to values, and nothing writable. Named
+# rather than spelled out at each of the three call sites, because it is one concept -- "a
+# deployment's environment" -- and because `os.environ` is only one of the things that satisfy
+# it. A test passes a dict, and the type says that is not a workaround.
+type Environ = Mapping[str, str]
 
 # The variables a deployment sets. The prefix is `ACADEMY_` for every one of them, so
 # `env | grep ACADEMY_` shows the whole of a deployment's configuration.
@@ -45,10 +51,10 @@ from typing import Final
 #
 # Comments rather than attribute docstrings: the check-docstring-first hook reads a string
 # literal after a module-level assignment as a second module docstring.
-ENV_PERSISTENCE = 'ACADEMY_PERSISTENCE'
+ENV_PERSISTENCE: Final = 'ACADEMY_PERSISTENCE'
 
 
-def _read(source: Mapping[str, str], name: str) -> str | None:
+def _read(source: Environ, name: str) -> str | None:
     """One variable, or ``None`` when a deployment did not really set it.
 
     Blank counts as unset. ``ACADEMY_PERSISTENCE=`` in a compose file, a CI matrix leg that
@@ -161,7 +167,7 @@ class Settings:
         self._values = _Values(persistence=persistence)
 
     @classmethod
-    def from_env(cls, environ: Mapping[str, str] | None = None) -> Settings:
+    def from_env(cls, environ: Environ | None = None) -> Self:
         """Read the configuration a deployment described.
 
         Args:

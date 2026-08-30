@@ -19,9 +19,10 @@ any of them knowing which database is underneath.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import Self
 
 from academy.adapters.outbound.persistence.memory import (
     MemoryAcademicHistoryRepository,
@@ -45,7 +46,7 @@ from academy.application.ports.outbound.repositories import (
 )
 from academy.application.ports.outbound.system import Clock
 from academy.application.ports.outbound.unit_of_work import UnitOfWork
-from academy.config.settings import ENV_PERSISTENCE, ConfigurationError, PersistenceBackend, Settings
+from academy.config.settings import ENV_PERSISTENCE, ConfigurationError, Environ, PersistenceBackend, Settings
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,7 +139,7 @@ class Container:
         self._store = MemoryStore()
 
     @classmethod
-    def from_env(cls, environ: Mapping[str, str] | None = None, clock: Clock | None = None) -> Container:
+    def from_env(cls, environ: Environ | None = None, clock: Clock | None = None) -> Self:
         """Build the container a deployment's environment describes.
 
         Args:

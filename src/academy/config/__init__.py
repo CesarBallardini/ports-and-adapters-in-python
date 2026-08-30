@@ -15,11 +15,19 @@ suite and, soon, the CLI, and both build their graph through :meth:`Container.re
 """
 
 from academy.config.container import Container, Scope
-from academy.config.settings import ENV_PERSISTENCE, ConfigurationError, Defaults, PersistenceBackend, Settings
+from academy.config.settings import (
+    ENV_PERSISTENCE,
+    ConfigurationError,
+    Defaults,
+    Environ,
+    PersistenceBackend,
+    Settings,
+)
 
 __all__ = [
     'ENV_PERSISTENCE',
     'ConfigurationError',
+    'Environ',
     'Defaults',
     'Container',
     'PersistenceBackend',
