@@ -26,8 +26,15 @@ that is a leak in the new layer -- fix the layer. The only exception is a genuin
 which is fixed in **both** repositories.
 
 This also constrains tooling: **do not add a lint rule the copied domain does not satisfy.**
-`ruff.toml` is kept in step with `multi-tenant-python`'s for exactly this reason. (`TC` /
-`flake8-type-checking` was tried and removed; see the next section.)
+`ruff.toml` stays in step with `multi-tenant-python`'s for exactly this reason. A rule the
+copied tree *does* satisfy may be added — run it over `src/academy/domain` first and confirm
+zero findings, as was done for `C90`. (`TC` / `flake8-type-checking` fails that test with 120
+findings and must stay out; see the next section. `ruff.toml` records both.)
+
+It constrains the test tree too: `tests/unit/` is copied verbatim as well, so **never add a
+file to it** — a new file makes the diff above non-empty. Application-layer unit tests live in
+`tests/application/` and carry the same `unit` marker; the tier is the marker, not the
+directory.
 
 ## Development workflow
 
@@ -39,6 +46,10 @@ After each phase, apply the standing reviews and keep the gate green.
 At the end of every phase, deliberately look for tests to add across **all tiers** — unit,
 integration, acceptance, e2e — not only the tier the phase was about. Write the ones that carry
 their weight.
+
+`make test-bdd` and `make test-e2e` carry an `ALLOW_EMPTY_TIER` guard, because pytest exits 5
+when a marker selects nothing and those tiers are unwritten. **Delete the guard from a target
+the moment that tier gets its first test**, or an empty tier goes back to passing silently.
 
 ### Rule 2 — Post-test typing review
 
@@ -112,12 +123,26 @@ job manage their own gitleaks).
 ## Things that bite
 
 - `pytest` runs with `asyncio_mode = "auto"`; async tests need no decorator.
+- **Warnings are errors** (`filterwarnings = ["error", ...]`). A new ignore must name a
+  *specific message*, never a bare category, and say why it cannot simply be fixed. The three
+  present are all pytest-bdd/gherkin lag.
 - `uv sync` needs `--all-extras` as well as `--all-groups`: adapter dependencies are **extras**,
-  because the hexagon core deliberately has none.
+  because the hexagon core deliberately has none. The same applies to `uv export` in the licence
+  gate and to the docs job — without it, nothing distributed gets checked and mkdocstrings
+  cannot import the adapters.
+- **MkDocs runs `strict: true`, so every page under `docs/` must appear in `mkdocs.yml`'s nav.**
+  Writing ADR-0015 and not adding it there turns `make docs` red. That is deliberate: it is what
+  stops a decision being written and then never linked.
 - There is no system Python on this machine. Always `uv run --frozen python`, never `python`.
 - Very large heredocs get truncated by the shell tooling here; write long files with the editor
   tool instead of `cat <<'EOF'`.
-- `make install` runs `pre-commit install`, which needs `.git` to exist.
+- `make install` runs `pre-commit install`, which needs `.git` to exist. **Re-run it whenever
+  `default_install_hook_types` changes** — a newly added stage (`commit-msg`, `pre-push`) is not
+  wired into `.git/hooks` until you do, and the hook then silently never fires.
+- `.markdown-link-check.json` carries entries meant to be deleted, each labelled: the
+  `scorecard.yaml` badge goes once that workflow has run on the default branch. Link checking is
+  **not** in the PR gate — it is a local hook plus the scheduled `links.yml` — because third-party
+  availability is not deterministic and a random red build teaches people to bypass the check.
 
 ## Git
 
@@ -133,3 +158,13 @@ command handed over must have a Conventional Commits subject.
 
 The version lives **only in the git tag** (`uv-dynamic-versioning`); there is nothing to bump
 in a tracked file. Commits to the default branch are blocked by a hook: work goes on a branch.
+
+Branches are named `<type>/<slug>`, where `<type>` is the Conventional Commits type of the work
+— `feat/quality-gates`, `fix/gitleaks-scan-scope`. A `pre-push` hook enforces it. So a handover
+that starts a new line of work leads with `git checkout -b <type>/<slug>`.
+
+**The pull request title has to be set by hand.** When a branch carries more than one commit,
+GitHub defaults the title to the humanised branch name (`ci/sync-upstream-quality-gates` →
+`Ci/sync upstream quality gates`), which drops the colon and fails `validate-pr-title`. The
+`pre-push` hook warns and suggests a starting point. That title is what a squash merge records
+and what `cz bump` reads, so it is the one that matters.
