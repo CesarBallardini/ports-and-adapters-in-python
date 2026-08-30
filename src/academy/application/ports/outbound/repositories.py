@@ -53,6 +53,19 @@ from academy.domain.shared.ids import (
     SubjectId,
 )
 
+# What a listing is ordered by: a record's natural key, rendered as strings and ending in its
+# id so that two records sharing a natural key still have a total order. It is the type behind
+# the phrase "by natural key, then by id to break ties" that :meth:`Repository.list_all`
+# promises, and it belongs here rather than in an adapter because the promise is the port's --
+# an adapter implements the order, it does not decide it.
+#
+# Strings rather than the domain's own types because the promised orderings are lexicographic,
+# and a tuple mixing `str` with `UUID` would not compare at all.
+#
+# Comments rather than attribute docstrings: the check-docstring-first hook reads a string
+# literal after a module-level assignment as a second module docstring.
+type SortKey = tuple[str, ...]
+
 
 @runtime_checkable
 class Repository[EntityT, IdT](Protocol):
