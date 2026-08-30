@@ -20,3 +20,4 @@ references it, never edited in place.
 | [0012](./0012-domain-error-to-http-status-table.md) | One declarative DomainError to HTTP status table | Accepted |
 | [0013](./0013-testing-strategy.md) | Testing strategy and tiers | Accepted |
 | [0014](./0014-in-memory-adapters-and-contract-tests.md) | In-memory adapters are first-class, verified by contract tests | Accepted |
+| [0015](./0015-manual-composition-root-over-a-di-container.md) | Manual composition root over a DI container | Accepted |
