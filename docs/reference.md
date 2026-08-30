@@ -23,6 +23,8 @@ router that renders the grading screen cannot reach anything else.
 
 ::: academy.application.ports.inbound.grading
 
+::: academy.application.ports.inbound.records
+
 ## Driven ports
 
 All async, because persistence is I/O (ADR-0005). Read the docstrings as
@@ -41,6 +43,8 @@ Use cases return DTOs, never domain entities, so an adapter cannot invoke
 domain behaviour and a template cannot cause a side effect.
 
 ::: academy.application.grading
+
+::: academy.application.records
 
 ::: academy.application.authorization
 

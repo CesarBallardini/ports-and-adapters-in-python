@@ -12,10 +12,11 @@ from uuid import UUID
 import pytest
 
 from academy.adapters.outbound.system import FixedClock, SystemClock
-from academy.application.commands import RecordGradeCommand
+from academy.application.commands import RecordGradeCommand, ViewAcademicHistoryCommand
 from academy.application.dtos import Actor
 from academy.application.errors import AuthorizationError
 from academy.application.ports.inbound.grading import ManageGrades
+from academy.application.ports.inbound.records import ViewStudentRecords
 from academy.config import ENV_PERSISTENCE, ConfigurationError, Container, Defaults, PersistenceBackend, Settings
 from academy.domain.academics.course_section import CourseSection
 from academy.domain.academics.term import Term
@@ -263,6 +264,24 @@ async def test_the_wired_guard_refuses_an_actor_with_no_relation(container: Cont
             await scope.grade_management().record_grade(
                 RecordGradeCommand(actor=OUTSIDER_ACTOR, section_id=str(SECTION), student_id=str(STUDENT), grade=8)
             )
+
+
+@pytest.mark.unit
+async def test_the_scope_builds_the_record_reading_use_cases(container: Container) -> None:
+    await _seed(container)
+
+    # The student themselves, not the teacher: teaching a section grants READ on its GRADES,
+    # and deliberately not on a student's whole transcript.
+    student_actor = Actor(person_id=STUDENT, roles=frozenset({Role.STUDENT}))
+
+    async with container.request_scope() as scope:
+        records = scope.student_records()
+        history = await records.view_academic_history(
+            ViewAcademicHistoryCommand(actor=student_actor, student_id=str(STUDENT))
+        )
+
+    assert isinstance(records, ViewStudentRecords)
+    assert history.student_id == str(STUDENT)
 
 
 @pytest.mark.unit

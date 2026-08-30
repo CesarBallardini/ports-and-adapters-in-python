@@ -37,6 +37,7 @@ from academy.adapters.outbound.system import SystemClock
 from academy.application.authorization import AccessGuard, RelationshipResolver
 from academy.application.grading import GradeManagement
 from academy.application.ports.inbound.grading import ManageGrades
+from academy.application.ports.inbound.records import ViewStudentRecords
 from academy.application.ports.outbound.repositories import (
     AcademicHistoryRepository,
     ConfigurationRepository,
@@ -46,6 +47,7 @@ from academy.application.ports.outbound.repositories import (
 )
 from academy.application.ports.outbound.system import Clock
 from academy.application.ports.outbound.unit_of_work import UnitOfWork
+from academy.application.records import StudentRecords
 from academy.config.settings import ENV_PERSISTENCE, ConfigurationError, Environ, PersistenceBackend, Settings
 
 
@@ -92,6 +94,26 @@ class Scope:
             histories=self.histories,
             people=self.people,
             uow=self.unit_of_work(),
+            guard=self.access_guard(),
+        )
+
+    def student_records(self) -> ViewStudentRecords:
+        """Build the transcript-reading use cases (UC-26, UC-28, UC-30).
+
+        No unit of work is passed, and none is built: this use case only reads, and a
+        transaction is a write boundary. The factory being on the scope rather than the
+        container is still right -- the repositories it closes over are the scope's.
+
+        Returns:
+            The inbound port, satisfied by
+            :class:`~academy.application.records.StudentRecords`.
+        """
+        return StudentRecords(
+            histories=self.histories,
+            people=self.people,
+            guardianships=self.guardianships,
+            configuration=self.configuration,
+            clock=self.clock,
             guard=self.access_guard(),
         )
 

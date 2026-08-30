@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from academy.application.commands import ViewAcademicHistoryCommand
+from academy.application.commands import ListMyWardsCommand, ViewAcademicHistoryCommand
 from academy.application.dtos import AcademicHistoryDto, PersonDto
 
 
@@ -29,11 +29,23 @@ class ViewStudentRecords(Protocol):
         """
         ...
 
-    async def list_my_wards(self, actor_person_id: str) -> list[PersonDto]:
-        """List the students currently in this person's care (UC-28).
+    async def list_my_wards(self, command: ListMyWardsCommand) -> list[PersonDto]:
+        """List the students currently in the actor's care (UC-28).
 
         "Currently" is load-bearing: the list is derived from stored guardianships filtered
         by each ward's age against the global age of majority, computed on read. A ward who
         had a birthday overnight is simply absent the next morning.
+
+        Takes a command carrying the ``Actor`` rather than a person id, like every other use
+        case here. The id it needs is the *authenticated* one, and a plain string parameter
+        would let an inbound adapter pass one out of the request instead -- handing anyone
+        the ability to enumerate anyone else's wards. There is no authorization check beyond
+        that, because there is nothing to check: the subject of the question and the person
+        asking it are the same, and an actor with no wards gets an empty list rather than a
+        refusal.
+
+        Returns:
+            The wards whose guardianship applies today, each appearing once however many
+            links connect the pair. No ordering is promised.
         """
         ...
