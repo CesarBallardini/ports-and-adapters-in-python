@@ -268,7 +268,16 @@ async def test_the_wired_guard_refuses_an_actor_with_no_relation(container: Cont
 @pytest.mark.unit
 async def test_each_scope_gets_its_own_unit_of_work(container: Container) -> None:
     async with container.request_scope() as first, container.request_scope() as second:
-        assert first.uow is not second.uow
+        assert first.unit_of_work() is not second.unit_of_work()
+
+
+@pytest.mark.unit
+async def test_every_use_case_gets_its_own_unit_of_work(container: Container) -> None:
+    # A unit of work refuses re-entry while it is active, so a scope that handed the same one
+    # to every use case would turn two overlapping calls into a RuntimeError rather than two
+    # transactions. The factory is what prevents that.
+    async with container.request_scope() as scope:
+        assert scope.unit_of_work() is not scope.unit_of_work()
 
 
 @pytest.mark.unit

@@ -19,7 +19,7 @@ any of them knowing which database is underneath.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Self
@@ -60,9 +60,15 @@ class Scope:
     and not every request needs every one of them. They return the inbound port, not the
     implementing class: an adapter that held a ``GradeManagement`` could reach past the port,
     and the point of the port is that it cannot.
+
+    ``unit_of_work`` is a **factory**, not an instance, and that distinction is load-bearing.
+    A unit of work refuses re-entry while it is active, so one shared across every use case a
+    scope builds would turn two overlapping calls -- an ``asyncio.gather`` of two grade
+    recordings in a batch importer -- into ``RuntimeError`` rather than two transactions. Each
+    use case gets its own; the repositories, which hold no transaction state, are shared.
     """
 
-    uow: UnitOfWork
+    unit_of_work: Callable[[], UnitOfWork]
     people: PersonRepository
     sections: SectionRepository
     histories: AcademicHistoryRepository
@@ -85,7 +91,7 @@ class Scope:
             sections=self.sections,
             histories=self.histories,
             people=self.people,
-            uow=self.uow,
+            uow=self.unit_of_work(),
             guard=self.access_guard(),
         )
 
@@ -179,7 +185,7 @@ class Container:
         """
         store = self._store
         yield Scope(
-            uow=MemoryUnitOfWork(store),
+            unit_of_work=lambda: MemoryUnitOfWork(store),
             people=MemoryPersonRepository(store),
             sections=MemorySectionRepository(store),
             histories=MemoryAcademicHistoryRepository(store),

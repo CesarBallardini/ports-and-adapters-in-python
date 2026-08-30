@@ -55,14 +55,21 @@ from academy.domain.shared.ids import (
 
 
 @runtime_checkable
-class Repository[E, IdT](Protocol):
+class Repository[EntityT, IdT](Protocol):
     """The storage operations every aggregate needs.
 
     Generic over the aggregate and its identifier type, so a ``PersonRepository`` cannot be
     passed where a ``SectionRepository`` is expected even though their shapes match.
+
+    Both parameters carry the ``T`` suffix, and neither is decoration: ``Entity`` and ``Id``
+    are already taken by real classes -- :class:`~academy.domain.shared.entity.Entity`, which
+    the aggregates inherit, and the ``_Id`` base of every identifier in
+    :mod:`~academy.domain.shared.ids` -- so an unsuffixed parameter would read as the class it
+    stands in for. ``IdT`` is the domain's own spelling, fixed there by ADR-0002; ``EntityT``
+    is named to match it rather than left as a bare letter.
     """
 
-    async def get(self, entity_id: IdT) -> E | None:
+    async def get(self, entity_id: IdT) -> EntityT | None:
         """Fetch one aggregate by identity.
 
         Returns:
@@ -70,7 +77,7 @@ class Repository[E, IdT](Protocol):
         """
         ...
 
-    async def add(self, entity: E) -> None:
+    async def add(self, entity: EntityT) -> None:
         """Store an aggregate that is not yet stored.
 
         Raises:
@@ -79,7 +86,7 @@ class Repository[E, IdT](Protocol):
         """
         ...
 
-    async def save(self, entity: E) -> None:
+    async def save(self, entity: EntityT) -> None:
         """Persist changes to an already-stored aggregate.
 
         Raises:
@@ -96,7 +103,7 @@ class Repository[E, IdT](Protocol):
         """
         ...
 
-    async def list_all(self) -> list[E]:
+    async def list_all(self) -> list[EntityT]:
         """Every stored aggregate.
 
         Returns:
