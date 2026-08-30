@@ -56,6 +56,23 @@ class ViewAcademicHistoryCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class ListMyWardsCommand:
+    """List the students currently in the actor's care (UC-28).
+
+    Carries only its actor, and that is the entire content of the request: the answer is
+    *whose wards am I responsible for*, so the subject and the asker are the same person.
+
+    It exists as a command rather than as a bare person id for exactly that reason. An id
+    parameter would have to come from somewhere, and the somewhere an inbound adapter reaches
+    for first is the request -- at which point anyone can enumerate anyone else's wards. An
+    ``Actor`` can only come from authentication (ADR-0010), so the trust boundary is in the
+    type rather than in a comment asking the adapter to be careful.
+    """
+
+    actor: Actor
+
+
+@dataclass(frozen=True, slots=True)
 class ImportSpreadsheetCommand:
     """Load a spreadsheet through one of the importers (UC-37 to UC-40).
 

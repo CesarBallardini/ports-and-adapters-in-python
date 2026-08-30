@@ -326,6 +326,16 @@ async def test_get_or_create_stores_the_history_it_creates(backend: Backend) -> 
 
 
 @pytest.mark.unit
+async def test_get_does_not_create_what_it_fails_to_find(backend: Backend) -> None:
+    # `get` and `get_or_create` sit next to each other on this port, and only one of them may
+    # write. `StudentRecords.view_academic_history` depends on it: a student with no grades
+    # must be readable without a row appearing, on a path that opens no transaction at all.
+    assert await backend.histories.get(ANN) is None
+    assert await backend.histories.get(ANN) is None
+    assert await backend.histories.list_all() == []
+
+
+@pytest.mark.unit
 async def test_get_or_create_returns_the_existing_history(backend: Backend) -> None:
     first = await backend.histories.get_or_create(ANN)
     second = await backend.histories.get_or_create(ANN)

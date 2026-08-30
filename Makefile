@@ -37,8 +37,8 @@ test-unit: ## Run only the unit tests (pure hexagon, no I/O)
 # first test, so that an empty tier goes back to being an error rather than a silent pass.
 ALLOW_EMPTY_TIER = || test $$? -eq 5
 
-test-bdd: ## Run only the BDD/acceptance tests (pytest-bdd) -- none written yet
-	uv run --frozen pytest -m bdd $(ALLOW_EMPTY_TIER)
+test-bdd: ## Run only the BDD/acceptance tests (pytest-bdd)
+	uv run --frozen pytest -m bdd
 
 test-integration: ## Run only the integration tests (real SQLite adapter + port contract)
 	uv run --frozen pytest -m integration
