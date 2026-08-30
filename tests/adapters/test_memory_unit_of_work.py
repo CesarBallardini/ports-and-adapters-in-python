@@ -73,6 +73,85 @@ async def test_a_rollback_leaves_another_transactions_commit_alone(store: Memory
 
 
 @pytest.mark.unit
+async def test_a_rollback_leaves_a_row_another_transaction_committed(store: MemoryStore) -> None:
+    # The same row this time, which the first version of the per-row journal still got wrong:
+    # it restored unconditionally, so the loser's rollback reinstated its own predecessor over
+    # a committed value. An undo entry now also remembers what the write left there, and puts
+    # the row back only while it still holds it.
+    people = MemoryPersonRepository(store)
+    await people.add(_person(ANN, 'ann'))
+    committed = asyncio.Event()
+
+    async def commits() -> None:
+        uow = MemoryUnitOfWork(store)
+        async with uow:
+            await people.save(_person(ANN, 'ann', 'Committed'))
+            await uow.commit()
+        committed.set()
+
+    async def rolls_back() -> None:
+        uow = MemoryUnitOfWork(store)
+        async with uow:
+            await people.save(_person(ANN, 'ann', 'Rolled Back'))
+            await committed.wait()
+            await uow.rollback()
+
+    await asyncio.gather(rolls_back(), commits())
+
+    stored = await people.get(ANN)
+    assert stored is not None
+    assert stored.personal.full_name == 'Committed'
+
+
+@pytest.mark.unit
+async def test_overlapping_transactions_are_atomic_but_not_isolated(store: MemoryStore) -> None:
+    # A characterisation test: this pins a *limitation*, not a guarantee. The backend takes no
+    # locks and keeps no read view, so one transaction sees another's uncommitted delete and
+    # claims the email it freed. When the delete rolls back, both people hold it -- a state
+    # `add` and `save` exist to prevent.
+    #
+    # Fixing it needs a lock held across await boundaries, which would turn the nesting the
+    # store refuses into a deadlock. The honest boundary is that this adapter gives atomicity
+    # and the SQLAlchemy one gives isolation; the day that stops being true, this test fails
+    # and says so.
+    people = MemoryPersonRepository(store)
+    await people.add(_person(ANN, 'shared'))
+    deleted = asyncio.Event()
+    reused = asyncio.Event()
+
+    async def deletes_then_rolls_back() -> None:
+        uow = MemoryUnitOfWork(store)
+        async with uow:
+            await people.delete(ANN)
+            deleted.set()
+            await reused.wait()
+            await uow.rollback()
+
+    async def claims_the_freed_email() -> None:
+        await deleted.wait()
+        uow = MemoryUnitOfWork(store)
+        async with uow:
+            await people.add(_person(BEA, 'shared'))
+            await uow.commit()
+        reused.set()
+
+    await asyncio.gather(deletes_then_rolls_back(), claims_the_freed_email())
+
+    emails = [person.email.value for person in await people.list_all()]
+    assert emails == ['shared@academy.test', 'shared@academy.test']
+
+
+@pytest.mark.unit
+async def test_nesting_two_units_of_work_over_one_store_is_refused(store: MemoryStore) -> None:
+    # Two *different* units of work used to nest silently, and the inner one then captured
+    # the outer's writes and undid them on its own rollback. Two nested request_scope()
+    # blocks are exactly that shape, so the refusal is loud rather than subtle.
+    async with MemoryUnitOfWork(store):
+        with pytest.raises(RuntimeError, match='already open'):
+            await MemoryUnitOfWork(store).__aenter__()
+
+
+@pytest.mark.unit
 async def test_a_rollback_restores_what_a_row_held_before(store: MemoryStore) -> None:
     people = MemoryPersonRepository(store)
     await people.add(_person(ANN, 'ann'))

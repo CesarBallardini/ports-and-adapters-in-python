@@ -6,13 +6,23 @@
 # fail_under is a hard gate, not a report: `pytest --cov` exits non-zero below
 # it, so a coverage drop fails CI the same way a lint or type error does.
 #
-# The floor is 70 while the hexagon is still being built outward. Measured
-# coverage is well above it (89% at the time of writing), and the gap is
-# deliberate: the uncovered lines are adapter methods and port bodies that the
-# contract suite has not reached yet, and a floor set at today's number would
-# fail the moment a new unexercised adapter lands. Raise it as each phase closes.
+# The floor was 70 while the hexagon was being built outward. The contract suite
+# (ADR-0014) now asserts the repository ports against the in-memory adapter and
+# the clock adapters are exercised, so measured coverage is ~93% and the floor
+# moves to 90.
+#
+# The remaining gap is deliberate and is mostly one thing: the port modules that
+# nothing imports yet sit at 0%, because a `Protocol` body never executes until
+# an adapter implements it. Those recover on their own in Phase B. Do not buy
+# them with an import statement in a test -- it would move the number without
+# moving the risk. The rest is the copied domain, whose tests are copied too and
+# cannot be added to (ADR-0002).
+#
+# Raise it again as each phase closes, but keep a little slack: a floor set at
+# exactly today's number fails the moment a new adapter lands ahead of its
+# contract tests.
 
 [report]
-fail_under = 70
+fail_under = 90
 show_missing = true
 precision = 0

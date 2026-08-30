@@ -76,9 +76,11 @@ def _read(source: Environ, name: str) -> str | None:
         The value, or ``None`` if it is absent or blank.
     """
     value = source.get(name)
-    if value is None or not value.strip():
+    if value is None:
         return None
-    return value
+
+    trimmed = value.strip()
+    return trimmed or None
 
 
 class ConfigurationError(Exception):
@@ -232,7 +234,7 @@ class Settings:
             return Defaults.PERSISTENCE
 
         try:
-            return PersistenceBackend(value.strip().lower())
+            return PersistenceBackend(value.lower())
         except ValueError as exc:
             supported = ', '.join(backend.value for backend in PersistenceBackend)
             raise ConfigurationError(

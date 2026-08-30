@@ -23,8 +23,23 @@ them:
   reference to something it saved;
 * an undo entry captures the row's value **before** the change, and entries replay in reverse,
   so a row written twice in one transaction goes back to what it held before the first write;
+* an undo entry also remembers what the write *left* there, and puts the row back only while
+  it still holds that value: a row another transaction has written since is left exactly as
+  that writer left it, because undoing it would destroy a committed write;
 * a rollback is **idempotent**, and so is a rollback after a commit -- committing is precisely
   the act of discarding the undo log.
+
+**Atomicity, not isolation.** A transaction here is all-or-nothing for the rows it wrote, and
+that is the whole of what it promises. It takes no locks and keeps no read view, so a
+transaction reads other transactions' uncommitted writes, and two that overlap on the same data
+can still reach a state neither would have reached alone -- one deleting the row whose
+uniqueness constraint another is checking, say. Serialising them would need a lock held across
+``await`` boundaries, which turns the nesting this module already refuses into a deadlock.
+
+That boundary is deliberate and it is where this adapter's honesty ends: it is exactly right for
+the test suite, the CLI and a single worker, which is what it is for, and a served process with
+real request concurrency wants the SQLAlchemy adapter, whose isolation comes from a database
+built to provide it.
 
 Isolation is per :mod:`asyncio` task, because the active transaction is held in a
 :class:`~contextvars.ContextVar`: a unit of work entered in one task does not capture writes
@@ -143,13 +158,15 @@ class Table[K: Hashable, V]:
 
     def __setitem__(self, key: K, value: V) -> None:
         """Store a row, recording how to put back whatever was there."""
-        self._journal(key)
+        prior = self._rows.get(key)
         self._rows[key] = value
+        self._journal(key, prior=prior, written=value)
 
     def __delitem__(self, key: K) -> None:
         """Remove a row, recording how to put it back."""
-        self._journal(key)
+        prior = self._rows[key]
         del self._rows[key]
+        self._journal(key, prior=prior, written=None)
 
     def get(self, key: K) -> V | None:
         """The row stored under this key, or ``None``."""
@@ -167,8 +184,15 @@ class Table[K: Hashable, V]:
         """
         return self._rows.values()
 
-    def _journal(self, key: K) -> None:
-        """Hand the open transaction an entry that restores this row."""
+    def _journal(self, key: K, *, prior: V | None, written: V | None) -> None:
+        """Hand the open transaction an entry that reverses this one write.
+
+        Args:
+            key: The row that changed.
+            prior: What it held before, or ``None`` if it did not exist.
+            written: What this write left there, or ``None`` for a delete. Kept so the undo
+                can tell whether the row is still the one it wrote.
+        """
         transaction = self._store.open_transaction()
         if transaction is None:
             # Outside a unit of work, a write is immediate and final. Seeding a store and a
@@ -176,11 +200,31 @@ class Table[K: Hashable, V]:
             # roll back to.
             return
 
-        prior = self._rows.get(key)
-        transaction.record(lambda: self._restore(key, prior))
+        transaction.record(lambda: self._restore(key, prior=prior, written=written))
 
-    def _restore(self, key: K, prior: V | None) -> None:
-        """Put one row back to ``prior``, where ``None`` means it was not there."""
+    def _restore(self, key: K, *, prior: V | None, written: V | None) -> None:
+        """Put one row back to ``prior``, unless someone else has written it since.
+
+        The check is what makes rollback safe under overlap. Restoring unconditionally would
+        reinstate this transaction's *predecessor* over a value another transaction committed
+        in the meantime -- destroying a committed write with no error and no trace, which is
+        the whole failure the per-row journal exists to prevent and which a whole-store
+        snapshot got wrong at a larger scale.
+
+        Identity, not equality: :class:`~academy.domain.shared.entity.Entity` compares by id,
+        so an equality check would read another transaction's replacement of the same record
+        as our own write and undo it. Rows enter the tables as private copies, so the object
+        actually stored is unique to the write that put it there.
+
+        A row that has moved on is left exactly as its writer left it. This transaction's
+        change to it is already lost -- overwritten by that writer -- so there is nothing to
+        undo, and the rollback stays silent rather than raising into an ``__aexit__`` that is
+        very often already handling an exception.
+        """
+        current = self._rows.get(key)
+        if current is not written:
+            return
+
         if prior is None:
             self._rows.pop(key, None)
         else:
@@ -216,10 +260,18 @@ class MemoryStore:
     @age_of_majority.setter
     def age_of_majority(self, age: AgeOfMajority) -> None:
         transaction = self.open_transaction()
-        if transaction is not None:
-            prior = self._age_of_majority
-            transaction.record(lambda: setattr(self, '_age_of_majority', prior))
+        prior = self._age_of_majority
         self._age_of_majority = age
+        if transaction is not None:
+            transaction.record(lambda: self._restore_age_of_majority(prior=prior, written=age))
+
+    def _restore_age_of_majority(self, *, prior: AgeOfMajority, written: AgeOfMajority) -> None:
+        """Put the configuration row back, unless someone else has set it since.
+
+        The same rule as :meth:`Table._restore`, for the one value that is not in a table.
+        """
+        if self._age_of_majority is written:
+            self._age_of_majority = prior
 
     def open_transaction(self) -> _Transaction | None:
         """The innermost transaction open against *this* store in this task, if any."""
@@ -229,7 +281,19 @@ class MemoryStore:
         return None
 
     def begin(self) -> _Transaction:
-        """Open and activate a transaction against this store."""
+        """Open and activate a transaction against this store.
+
+        Raises:
+            RuntimeError: If a transaction is already open on this store in this task. The
+                port says nesting is not supported, and the unit of work can only enforce
+                that for its own instance -- two *different* units of work over one store
+                would otherwise nest silently, and every write the outer one made while the
+                inner was open would be journalled into the inner log and undone by the
+                inner rollback. Two nested ``request_scope()`` blocks are exactly that.
+        """
+        if self.open_transaction() is not None:
+            raise RuntimeError('a unit of work is already open on this store; nesting is not supported')
+
         transaction = _Transaction(self)
         transaction.activate()
         return transaction
@@ -302,8 +366,13 @@ class MemoryUnitOfWork:
     async def rollback(self) -> None:
         """Discard every change in this transaction.
 
-        Reverses only this transaction's own writes: a row another transaction committed in
-        the meantime is left exactly as it committed it.
+        Reverses only this transaction's own writes, and only where they still stand: a row
+        another transaction has written since is left exactly as that writer left it, because
+        this transaction's change to it is already gone and undoing further would destroy a
+        committed write.
+
+        That is atomicity, not isolation -- see this module's docstring for where the
+        difference bites.
 
         Idempotent, and a no-op after a commit -- which is what lets a dry-run import roll
         back unconditionally without first asking whether anything was written.
