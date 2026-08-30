@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from academy.adapters.outbound.persistence.memory.store import MemoryStore
+from academy.adapters.outbound.persistence.memory.store import MemoryStore, Table
 from academy.application.errors import ConflictError, NotFoundError
 from academy.domain.academics.course_section import CourseSection
 from academy.domain.academics.term import Term
@@ -39,13 +39,15 @@ class _MemoryRepository[E, IdT](ABC):
     def __init__(self, store: MemoryStore) -> None:
         """Bind the repository to the store it reads and writes.
 
-        The *store*, not the table: a rollback replaces the table objects wholesale, and a
-        repository holding a direct reference would go on reading the discarded one.
+        The *store*, not the table: every repository then reaches its table the same way, and
+        the tables stay the store's to hand out. Rollback no longer replaces them -- it puts
+        individual rows back (see :mod:`~academy.adapters.outbound.persistence.memory.store`)
+        -- so holding a table would now be safe, and still says less about where state lives.
         """
         self._store = store
 
     @abstractmethod
-    def _table(self) -> dict[IdT, E]:
+    def _table(self) -> Table[IdT, E]:
         """The store table this repository owns."""
 
     @abstractmethod
@@ -113,7 +115,7 @@ class MemoryPersonRepository(_MemoryRepository[Person, PersonId]):
 
     entity_name = 'person'
 
-    def _table(self) -> dict[PersonId, Person]:
+    def _table(self) -> Table[PersonId, Person]:
         return self._store.people
 
     def _identity(self, entity: Person) -> PersonId:
@@ -181,7 +183,7 @@ class MemorySectionRepository(_MemoryRepository[CourseSection, SectionId]):
 
     entity_name = 'course section'
 
-    def _table(self) -> dict[SectionId, CourseSection]:
+    def _table(self) -> Table[SectionId, CourseSection]:
         return self._store.sections
 
     def _identity(self, entity: CourseSection) -> SectionId:
@@ -230,7 +232,7 @@ class MemoryAcademicHistoryRepository(_MemoryRepository[AcademicHistory, PersonI
 
     entity_name = 'academic history'
 
-    def _table(self) -> dict[PersonId, AcademicHistory]:
+    def _table(self) -> Table[PersonId, AcademicHistory]:
         return self._store.histories
 
     def _identity(self, entity: AcademicHistory) -> PersonId:
@@ -268,7 +270,7 @@ class MemoryGuardianshipRepository(_MemoryRepository[Guardianship, GuardianshipI
 
     entity_name = 'guardianship'
 
-    def _table(self) -> dict[GuardianshipId, Guardianship]:
+    def _table(self) -> Table[GuardianshipId, Guardianship]:
         return self._store.guardianships
 
     def _identity(self, entity: Guardianship) -> GuardianshipId:
