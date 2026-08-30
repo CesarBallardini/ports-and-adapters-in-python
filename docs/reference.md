@@ -56,3 +56,13 @@ The in-memory ones are production-grade adapters, not test doubles.
 ::: academy.adapters.outbound.persistence.memory.repositories
 
 ::: academy.adapters.outbound.system.clock
+
+## Composition root
+
+The only code allowed to know both a port and the adapter behind it, wired by
+hand rather than by a container (ADR-0015). Two lifetimes: the container is the
+process, the scope is one request, command or job.
+
+::: academy.config.settings
+
+::: academy.config.container
