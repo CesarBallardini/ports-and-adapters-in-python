@@ -36,7 +36,7 @@ from academy.domain.shared.ids import CredentialId, GuardianshipId, PersonId, Se
 type SortKey = tuple[str, ...]
 
 
-class _MemoryRepository[E, IdT: Hashable](ABC):
+class _MemoryRepository[EntityT, IdT: Hashable](ABC):
     """The five storage operations every aggregate needs, over one table of the store.
 
     Subclasses say which table, how to read an aggregate's identity, and what its natural
@@ -67,23 +67,23 @@ class _MemoryRepository[E, IdT: Hashable](ABC):
         self._store = store
 
     @abstractmethod
-    def _table(self) -> Table[IdT, E]:
+    def _table(self) -> Table[IdT, EntityT]:
         """The store table this repository owns."""
 
     @abstractmethod
-    def _identity(self, entity: E) -> IdT:
+    def _identity(self, entity: EntityT) -> IdT:
         """The aggregate's identifier."""
 
     @abstractmethod
-    def _sort_key(self, entity: E) -> SortKey:
+    def _sort_key(self, entity: EntityT) -> SortKey:
         """The natural key ``list_all`` orders by, ending in the id to break ties."""
 
-    async def get(self, entity_id: IdT) -> E | None:
+    async def get(self, entity_id: IdT) -> EntityT | None:
         """Fetch one aggregate by identity, or ``None`` if no such record exists."""
         entity = self._table().get(entity_id)
         return MemoryStore.copy_out(entity) if entity is not None else None
 
-    async def add(self, entity: E) -> None:
+    async def add(self, entity: EntityT) -> None:
         """Store an aggregate that is not yet stored.
 
         Raises:
@@ -94,7 +94,7 @@ class _MemoryRepository[E, IdT: Hashable](ABC):
             raise ConflictError(f'{self.entity_name} {identity!s} already exists')
         self._table()[identity] = MemoryStore.copy_in(entity)
 
-    async def save(self, entity: E) -> None:
+    async def save(self, entity: EntityT) -> None:
         """Persist changes to an already-stored aggregate.
 
         Raises:
@@ -116,16 +116,16 @@ class _MemoryRepository[E, IdT: Hashable](ABC):
             raise NotFoundError(self.entity_name, entity_id)
         del self._table()[entity_id]
 
-    async def list_all(self) -> list[E]:
+    async def list_all(self) -> list[EntityT]:
         """Every stored aggregate, in natural-key order."""
         return self._copies(sorted(self._table().values(), key=self._sort_key))
 
-    def _sorted(self, entities: list[E]) -> list[E]:
+    def _sorted(self, entities: list[EntityT]) -> list[EntityT]:
         """Order a subset the same way :meth:`list_all` orders the whole table."""
         return self._copies(sorted(entities, key=self._sort_key))
 
     @staticmethod
-    def _copies(entities: list[E]) -> list[E]:
+    def _copies(entities: list[EntityT]) -> list[EntityT]:
         """Hand out private copies of a result set."""
         return [MemoryStore.copy_out(entity) for entity in entities]
 
