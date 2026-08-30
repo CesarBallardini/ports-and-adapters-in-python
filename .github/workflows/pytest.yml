@@ -46,7 +46,11 @@ jobs:
       contents: read
     services:
       postgres:
-        image: postgres:17
+        # Pinned to a major version, not to a digest: the point is to run against the
+        # database this application targets, and a patch release of it is exactly what we
+        # want picked up. Bump the major deliberately -- it is the one thing here that can
+        # change transaction or type behaviour under an adapter (ADR-0007).
+        image: postgres:18
         env:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: academy
