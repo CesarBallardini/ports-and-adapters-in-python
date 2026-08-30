@@ -1,0 +1,55 @@
+name: docs
+
+# Published per release tag with mike, so the site carries one version per
+# release with `latest` pointing at the newest, rather than tracking whatever
+# happens to be on main.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions: {}
+
+# Never cancel a half-finished deploy: mike pushes commits to gh-pages, and an
+# interrupted run can leave the branch inconsistent.
+concurrency:
+  group: docs-gh-pages
+  cancel-in-progress: false
+
+jobs:
+  publish-docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # mike needs the gh-pages branch and the tag history
+          fetch-tags: true
+
+      - uses: ./.github/actions/setup-python
+        with:
+          sync-args: "--group doc --frozen"
+
+      - name: Configure the git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Resolve the version to publish
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION=$(uv run --frozen python -c "import importlib.metadata as m; print(m.version('academy'))")
+          fi
+          echo "DOCS_VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Deploy with mike
+        run: |
+          set -euo pipefail
+          uv run --frozen mike deploy --push --update-aliases "$DOCS_VERSION" latest
+          uv run --frozen mike set-default --push latest

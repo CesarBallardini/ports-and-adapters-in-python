@@ -1,10 +1,18 @@
 line-length = 119
 target-version = "py314"
 
-# The rule set is kept identical to multi-tenant-python's, because the domain is
-# copied from it verbatim (ADR-0002). Adding a rule here that the domain does not
-# satisfy would force a choice between editing the domain and carrying a
-# per-file-ignore for it -- and both would undermine the point of the copy.
+# The rule set stays in step with multi-tenant-python's, because the domain is
+# copied from it verbatim (ADR-0002). A rule the copied domain does not satisfy
+# would force a choice between editing the domain and carrying a per-file-ignore
+# for it, and both would undermine the point of the copy. A rule it *does*
+# satisfy may be added -- C90 below came from the localenv-python scaffold and
+# was verified against the copied tree before being selected.
+#
+# `TC` (flake8-type-checking) is the standing counter-example and must stay out:
+# it moves annotation-only imports into `if TYPE_CHECKING:` blocks, but names
+# here are subscripted in class bases (`Repository[Person, PersonId]`), which is
+# a runtime expression that `from __future__ import annotations` does not defer.
+# Deferring those imports is a NameError, and the rule reports 120 violations.
 [lint]
 select = [
     "E", "F", "W",  # pycodestyle + pyflakes
@@ -12,6 +20,7 @@ select = [
     "N",            # pep8-naming
     "UP",           # pyupgrade
     "B",            # flake8-bugbear
+    "C90",          # mccabe complexity -- honors [lint.mccabe] max-complexity below
     "S",            # flake8-bandit
     "SIM",          # flake8-simplify
     "RET",          # flake8-return

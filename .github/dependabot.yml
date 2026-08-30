@@ -1,0 +1,51 @@
+version: 2
+
+updates:
+  # Grouping collapses a week's worth of bumps into one PR per ecosystem, so
+  # the CI, security and coverage gates run once over the whole batch instead
+  # of once per dependency.
+  #
+  # cooldown holds a release for 10 days before proposing it -- long enough for
+  # a compromised or broken publish to be yanked upstream before it reaches a
+  # branch here.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      all:
+        patterns:
+          - "*"
+    cooldown:
+      default-days: 10
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      all:
+        patterns:
+          - "*"
+    cooldown:
+      default-days: 10
+
+  # Keeps the SHA-pinned `uses:` in the composite actions under
+  # .github/actions/ updated too -- Dependabot does not find them via the
+  # workflows directory alone.
+  - package-ecosystem: "github-actions"
+    directory: "/.github/actions/install-uv"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 10
+
+  # pre-commit hook revs (cooldown is not supported for this ecosystem).
+  - package-ecosystem: "pre-commit"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      all:
+        patterns:
+          - "*"

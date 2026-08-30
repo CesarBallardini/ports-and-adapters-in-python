@@ -1,0 +1,38 @@
+{
+  "_comment": [
+    "user_agent: a browser User-Agent for every link checked. Sites increasingly",
+    "answer an unrecognised agent with 403, and a 403 that only a bot ever sees",
+    "is not a dead link. Setting the agent is the accurate fix; widening",
+    "aliveStatusCodes to accept 403 would suppress genuine breakage instead.",
+    "",
+    "It must be the top-level `user_agent` key, NOT an httpHeaders entry.",
+    "link-check hands needle a `user_agent` option that defaults to",
+    "'link-check/<version>', and needle applies that over anything set through",
+    "headers -- so a User-Agent placed in httpHeaders is silently discarded.",
+    "This was verified both ways.",
+    "",
+    "ivarjacobson.com is ignored because it is intermittent, not because it is",
+    "dead: the same URL was observed returning 200, then 403, then 200 from the",
+    "same workstation minutes apart, and separately 403 on a CI runner. The page",
+    "is alive -- checked by hand. link-check retries only a 429, so retryCount",
+    "cannot absorb a 403, and an intermittent failure in a pre-commit hook",
+    "blocks a commit that has nothing to do with it. A check that fails at",
+    "random teaches people to bypass it, which costs more than the one link it",
+    "was watching. Scoped to this host, so a 403 anywhere else still fails.",
+    "",
+    "TEMPORARY: the scorecard entry. A workflow's badge.svg 404s until that",
+    "workflow has run at least once, and scorecard.yaml runs only on a push to",
+    "the default branch, so it cannot have run from a feature branch. Delete",
+    "that entry after the first scorecard run on the default branch. The blanket",
+    "ignore that covered this repository's own GitHub URLs while it had no",
+    "remote is gone -- those resolve now and are checked again."
+  ],
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  "ignorePatterns": [
+    { "pattern": "^https://www\\.ivarjacobson\\.com/" },
+    { "pattern": "^https://github\\.com/CesarBallardini/ports-and-adapters-in-python/actions/workflows/scorecard\\.yaml" }
+  ],
+  "retryOn429": true,
+  "retryCount": 3,
+  "aliveStatusCodes": [200, 206]
+}

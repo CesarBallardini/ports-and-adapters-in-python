@@ -3,6 +3,7 @@
 [![check](https://github.com/CesarBallardini/ports-and-adapters-in-python/actions/workflows/check.yml/badge.svg)](https://github.com/CesarBallardini/ports-and-adapters-in-python/actions/workflows/check.yml)
 [![pytest](https://github.com/CesarBallardini/ports-and-adapters-in-python/actions/workflows/pytest.yml/badge.svg)](https://github.com/CesarBallardini/ports-and-adapters-in-python/actions/workflows/pytest.yml)
 [![security](https://github.com/CesarBallardini/ports-and-adapters-in-python/actions/workflows/security.yml/badge.svg)](https://github.com/CesarBallardini/ports-and-adapters-in-python/actions/workflows/security.yml)
+[![scorecard](https://github.com/CesarBallardini/ports-and-adapters-in-python/actions/workflows/scorecard.yaml/badge.svg)](https://github.com/CesarBallardini/ports-and-adapters-in-python/actions/workflows/scorecard.yaml)
 
 A complete application built with **ports and adapters** (hexagonal architecture) in Python:
 an academic-records backend with an htmx web UI, a JSON API, a CLI, bulk spreadsheet
@@ -112,17 +113,41 @@ Honest state of the work, since this is a repository under construction:
 ## Getting started
 
 Prerequisites: [uv](https://docs.astral.sh/uv/), Git, and — only for `make security` —
-[OSV-Scanner](https://google.github.io/osv-scanner/) on `PATH`. Python 3.14 is installed
-automatically by uv from `.python-version`.
+[OSV-Scanner](https://google.github.io/osv-scanner/) and
+[gitleaks](https://github.com/gitleaks/gitleaks) on `PATH`. Both are Go binaries rather than
+Python packages, which is why uv cannot install them; the pre-commit hook and the CI job each
+manage their own copy of gitleaks, so only the standalone target needs it. Python 3.14 is
+installed automatically by uv from `.python-version`.
 
 ```bash
 git clone https://github.com/CesarBallardini/ports-and-adapters-in-python
 cd ports-and-adapters-in-python
 make install
-make lint types test security
+make lint types arch test coverage security
 ```
 
 Everything goes through the Makefile; `make` with no target lists every one.
+
+### The gates
+
+Each one fails the build rather than printing a warning.
+
+| Gate | Command | Config |
+| --- | --- | --- |
+| Lint and format | `make lint` | `ruff.toml` |
+| Types (two engines) | `make types` | `pyrightconfig.json`, `pyrefly.toml` |
+| The dependency rule | `make arch` | `.importlinter` |
+| Tests, by tier | `make test` | `pyproject.toml` |
+| Coverage floor | `make coverage` | `.coveragerc` |
+| SAST, CVEs, secrets, licenses | `make security` | `bandit.yaml`, `.gitleaks.toml`, `uv.lock` |
+| Docs build (`--strict`) | `make docs` | `mkdocs.yml` |
+| Every hook at once | `make precommit` | `.pre-commit-config.yaml` |
+
+`make install` wires both the `pre-commit` and `commit-msg` hooks, so commit messages are
+checked against [Conventional Commits](https://www.conventionalcommits.org/) locally — the
+same check CI runs over a pull request title, since a squash merge takes the title as the
+subject. The version is never written in a tracked file: it is derived from the newest git tag
+(see [`CONTRIBUTING.md`](./CONTRIBUTING.md)).
 
 ## References
 
@@ -210,7 +235,14 @@ free authoritative version exists, it is linked.
 [openpyxl](https://openpyxl.readthedocs.io/) ·
 [bandit](https://bandit.readthedocs.io/) ·
 [pip-audit](https://pypi.org/project/pip-audit/) ·
-[OSV-Scanner](https://google.github.io/osv-scanner/)
+[OSV-Scanner](https://google.github.io/osv-scanner/) ·
+[gitleaks](https://github.com/gitleaks/gitleaks) ·
+[pip-licenses](https://pypi.org/project/pip-licenses/) ·
+[coverage.py](https://coverage.readthedocs.io/) ·
+[commitizen](https://commitizen-tools.github.io/commitizen/) ·
+[MkDocs Material](https://squidfunk.github.io/mkdocs-material/) ·
+[mkdocstrings](https://mkdocstrings.github.io/) ·
+[OpenSSF Scorecard](https://securityscorecards.dev/)
 
 ### Companion repositories
 

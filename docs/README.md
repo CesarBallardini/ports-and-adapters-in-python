@@ -11,7 +11,7 @@ input to the next — the design is derived, not decreed.
 | 04 | [State diagrams](./04-state-diagrams.md) | What lifecycles do those objects have, and what must be stored versus computed? |
 | 05 | [Domain model](./05-domain-model.md) | What are the entities, value objects and invariants? |
 | 06 | [Class diagram](./06-class-diagram.md) | What classes result from assigning those responsibilities, in which layer? |
-| — | [Decisions](./decisions/) | Why each structural choice was made, and what was rejected |
+| — | [Decisions](./decisions/README.md) | Why each structural choice was made, and what was rejected |
 
 The path from 02 to 06 is the classic object-oriented analysis and design sequence: use cases
 give the behaviour, sequence diagrams assign the responsibilities, and the class diagram is what

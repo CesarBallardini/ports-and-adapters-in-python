@@ -2,18 +2,38 @@ name: pytest
 
 on:
   push:
+    branches: [main, master]
   pull_request:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # Default run: SQLite, nothing to install. This is the suite a reader gets
   # locally with `make test` (ADR-0007).
   pytest:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
-      - run: uv sync --all-groups --all-extras --frozen
-      - run: uv run --frozen pytest -n auto --cov=academy --cov-report=xml
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: ./.github/actions/setup-python
+
+      # --cov-config makes the .coveragerc gate explicit rather than relying on
+      # coverage's file discovery; fail_under in that file is what turns a
+      # coverage drop into a failed build.
+      - name: Run tests with coverage
+        run: >-
+          uv run --frozen pytest -n auto
+          --cov=academy
+          --cov-config=.coveragerc
+          --cov-report=xml
+          --cov-report=term-missing
 
   # The same integration and persistence suites, against the database this
   # application actually targets. SQLite is permissive about types, lenient
@@ -21,9 +41,12 @@ jobs:
   # only ever exercised against it is an untested adapter (ADR-0007).
   pytest-postgres:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
     services:
       postgres:
-        image: postgres:16
+        image: postgres:17
         env:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: academy
@@ -36,7 +59,9 @@ jobs:
     env:
       ACADEMY_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/academy
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
-      - run: uv sync --all-groups --all-extras --frozen
-      - run: uv run --frozen pytest -m integration
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: ./.github/actions/setup-python
+
+      - name: Run the integration tier against PostgreSQL
+        run: uv run --frozen pytest -m integration

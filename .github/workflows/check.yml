@@ -2,18 +2,83 @@ name: check
 
 on:
   push:
+    branches: [main, master]
   pull_request:
+
+# Default-deny: every job below opts back in to exactly the scopes it needs.
+permissions: {}
+
+# A PR that gets a second push supersedes the first run rather than queueing
+# behind it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
-      - run: uv sync --all-groups --all-extras --frozen
-      - run: uv run --frozen ruff check .
-      - run: uv run --frozen ruff format --check .
-      - run: uv run --frozen pyright
-      # The dependency rule is enforced in CI, not just in pre-commit: a hook
-      # can be skipped with --no-verify, a required check cannot.
-      - run: uv run --frozen lint-imports
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: ./.github/actions/setup-python
+
+      - name: Configure pre-commit cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit|${{ hashFiles('.python-version', '.pre-commit-config.yaml') }}
+
+      # pre-commit is the single source of truth for lint and format: running
+      # the same hooks here is what stops CI and a local commit disagreeing
+      # about which ruff version or which rules applied. It also runs bandit and
+      # import-linter, which are local hooks. no-commit-to-branch is skipped
+      # because CI legitimately builds with the default branch checked out.
+      # markdown-link-check is skipped here and runs in links.yml instead. Link
+      # liveness depends on third-party sites, so it is not a deterministic
+      # check: ivarjacobson.com intermittently answers a runner with 403 while
+      # serving the same URL fine elsewhere, and link-check retries only a 429.
+      # Gating every pull request on that makes unrelated work go red, which
+      # trains people to re-run a red build instead of reading it. The hook
+      # still runs locally on the markdown you touch, and the scheduled job
+      # catches rot in the files nobody touched.
+      - name: Run pre-commit hooks
+        run: SKIP=no-commit-to-branch,markdown-link-check uv run --frozen pre-commit run --all-files
+
+      # The type checkers are not pre-commit hooks -- they need the fully synced
+      # project environment to resolve imports, not a hook-managed one -- so
+      # they stay separate steps. This mirrors `make types`.
+      - name: Type check (pyright)
+        run: uv run --frozen pyright
+
+      - name: Type check (pyrefly)
+        run: uv run --frozen pyrefly check
+
+      # Belt and braces on the one rule this repository exists to demonstrate.
+      # It already runs as a pre-commit hook above, but a hook can be skipped
+      # with --no-verify and a required check cannot (ADR-0004).
+      - name: Dependency rule (import-linter)
+        run: uv run --frozen lint-imports
+
+  # Separate job: the docs build only needs the doc group, and a broken
+  # docstring reference should read as a docs failure, not a lint failure.
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # --all-extras as well: mkdocstrings imports the modules it documents, and
+      # the adapter packages import their libraries at module level.
+      - uses: ./.github/actions/setup-python
+        with:
+          sync-args: "--group doc --all-extras --frozen"
+
+      # --strict turns a dangling mkdocstrings reference or an orphaned page
+      # into a build failure, which is the only way docs stay honest.
+      - name: Build the documentation
+        run: uv run --frozen mkdocs build --strict -d ./site

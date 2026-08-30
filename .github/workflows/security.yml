@@ -2,27 +2,114 @@ name: security
 
 on:
   push:
+    branches: [main, master]
   pull_request:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   security:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
-      - run: uv sync --all-groups --all-extras --frozen
-      - run: uv run --frozen bandit -c bandit.yaml -r src
-      - run: uv run --frozen pip-audit --skip-editable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-  # osv-scanner is a standalone Go binary (not a PyPI package), so it can't
-  # go through uv -- it's wired in as Google's official reusable workflow
-  # instead, scanning uv.lock directly.
+      - uses: ./.github/actions/setup-python
+
+      - name: SAST (bandit)
+        run: uv run --frozen bandit -c bandit.yaml -r src
+
+      - name: Dependency audit (pip-audit)
+        run: uv run --frozen pip-audit --skip-editable
+
+  # Licenses. FOSSA is the commercial answer here; pip-licenses covers the part
+  # that actually matters for an MIT project at this size.
+  #
+  # The gate deliberately runs over the *distributed* closure only: nothing else
+  # creates a licensing obligation. Here that closure is the extras -- the
+  # hexagon core has no dependencies of its own, so every shipped library
+  # arrives through an adapter extra and --all-extras is what makes the export
+  # cover them. The dev toolchain is reported but not gated: Faker pulls in
+  # text-unidecode, which offers GPLv2+ alongside the Artistic License, and it
+  # never ships.
+  licenses:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: ./.github/actions/setup-python
+
+      - name: Report the licenses of the whole toolchain
+        run: |
+          {
+            echo "## Dependency licenses"
+            echo
+            uv run --frozen pip-licenses --format=markdown --with-urls
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Gate the licenses of the distributed dependencies
+        run: |
+          set -euo pipefail
+          runtime=$(uv export --frozen --no-dev --no-emit-project --no-hashes --all-extras \
+                      --format requirements.txt \
+                    | sed -e 's/[[:space:]]*[;#].*$//' -e 's/[=<>!~].*$//' -e '/^$/d' \
+                    | paste -sd' ' -)
+
+          if [ -z "$runtime" ]; then
+            echo "No runtime dependencies to check; nothing is distributed yet."
+            exit 0
+          fi
+
+          echo "Checking: $runtime"
+          uv run --frozen pip-licenses --packages $runtime \
+            --fail-on="GNU General Public License (GPL);GNU General Public License v2 or later (GPLv2+);GNU General Public License v3 (GPLv3);GNU Affero General Public License v3 or later (AGPLv3+)"
+
+  # gitleaks is a Go binary, not a PyPI package, so it cannot go through uv.
+  # The version is pinned to match the hook rev in .pre-commit-config.yaml so
+  # CI and a local commit scan with the same ruleset.
+  #
+  # The pre-commit hook only ever sees staged changes, which is a no-op in CI --
+  # so this job scans the whole working tree instead.
+  gitleaks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      GITLEAKS_VERSION: 8.30.1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/gitleaks"
+          curl -sSfL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP/gitleaks" gitleaks
+          echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
+
+      - name: Scan the working tree for secrets
+        run: gitleaks dir . --redact --verbose -c .gitleaks.toml
+
+  # osv-scanner is likewise a standalone Go binary, wired in as Google's
+  # official reusable workflow so it scans uv.lock directly and uploads its
+  # findings to the code-scanning dashboard as SARIF.
   osv-scanner:
     permissions:
       actions: read
       contents: read
       security-events: write
-    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.3.8
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
     with:
       scan-args: |-
         --lockfile=./uv.lock

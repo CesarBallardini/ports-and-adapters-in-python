@@ -1,0 +1,37 @@
+name: links
+
+# Link rot is real but it is not caused by the pull request in front of you, so
+# it does not belong in the pull-request gate (see the SKIP list in check.yml).
+# It is caused by someone else's site changing, which happens on its own
+# schedule -- so this runs on one too, and can be dispatched by hand.
+#
+# Failing here means a link needs fixing, not that a change was bad.
+
+on:
+  schedule:
+    # Mondays, 06:20 UTC. Off the hour: scheduled runs cluster there and get
+    # queued.
+    - cron: "20 6 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  markdown-link-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: ./.github/actions/setup-python
+
+      # Runs the very same hook, with the same pinned revision and the same
+      # .markdown-link-check.json, so a link that passes here passes locally.
+      - name: Check every link in every markdown file
+        run: uv run --frozen pre-commit run markdown-link-check --all-files

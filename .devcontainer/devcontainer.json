@@ -1,0 +1,19 @@
+{
+  "name": "ports-and-adapters-in-python",
+  "build": {
+    "dockerfile": "../Dockerfile"
+  },
+  "onCreateCommand": "make install",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-python.debugpy",
+        "charliermarsh.ruff",
+        "tamasfe.even-better-toml",
+        "redhat.vscode-yaml"
+      ]
+    }
+  }
+}

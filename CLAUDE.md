@@ -70,11 +70,17 @@ production-grade adapters, not test doubles, and they live in `src/`, not in `te
 All of these must be green before a phase is done:
 
 ```bash
-make lint types arch test security
+make lint types arch test coverage security docs
 ```
 
-That is ruff (lint + format), pyright + pyrefly, **import-linter**, the full test suite, and
-bandit + pip-audit + OSV-Scanner.
+That is ruff (lint + format), pyright + pyrefly, **import-linter**, the full test suite, the
+coverage floor in `.coveragerc`, bandit + pip-audit + OSV-Scanner + gitleaks + pip-licenses,
+and a `--strict` MkDocs build.
+
+`make precommit` runs every hook at once and is what CI runs, so a green local run and a green
+CI run cannot drift. Two of the security tools are Go binaries that uv cannot install —
+OSV-Scanner and gitleaks must be on `PATH` for `make security` (the pre-commit hook and the CI
+job manage their own gitleaks).
 
 ## Conventions
 
@@ -118,3 +124,12 @@ bandit + pip-audit + OSV-Scanner.
 **Never mutate the repository.** No `add`, `commit`, `push`, `checkout -b`, `merge`, `rebase`,
 `reset`, `tag`. Read-only inspection (`status`, `log`, `diff`, `show`) is fine. Make the edits,
 then hand over the exact commands to run.
+
+Commit messages follow **[Conventional Commits](https://www.conventionalcommits.org/)** —
+`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`, `ci:`. A `commit-msg` hook checks
+this locally and `cz check` checks the PR title in CI, because a squash merge takes the title
+as the subject and `cz bump` reads that history to pick the next version. So any commit
+command handed over must have a Conventional Commits subject.
+
+The version lives **only in the git tag** (`uv-dynamic-versioning`); there is nothing to bump
+in a tracked file. Commits to the default branch are blocked by a hook: work goes on a branch.
