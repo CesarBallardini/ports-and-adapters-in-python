@@ -18,6 +18,7 @@ from typing import ClassVar
 
 from academy.adapters.outbound.persistence.memory.store import MemoryStore, Table
 from academy.application.errors import ConflictError, NotFoundError
+from academy.application.ports.outbound.repositories import SortKey
 from academy.domain.academics.course_section import CourseSection
 from academy.domain.academics.term import Term
 from academy.domain.grades.academic_history import AcademicHistory
@@ -25,15 +26,6 @@ from academy.domain.guardianship.guardianship import Guardianship
 from academy.domain.people.age_of_majority import AgeOfMajority
 from academy.domain.people.person import Person
 from academy.domain.shared.ids import CredentialId, GuardianshipId, PersonId, SectionId, SubjectId
-
-# What a listing is ordered by: an aggregate's natural key, rendered as strings and ending in
-# its id so that two records sharing a natural key still have a total order. Strings rather
-# than the domain's own types because the orderings the ports promise are lexicographic, and a
-# tuple mixing `str` with `UUID` would not compare at all.
-#
-# Comments rather than attribute docstrings: the check-docstring-first hook reads a string
-# literal after a module-level assignment as a second module docstring.
-type SortKey = tuple[str, ...]
 
 
 class _MemoryRepository[EntityT, IdT: Hashable](ABC):

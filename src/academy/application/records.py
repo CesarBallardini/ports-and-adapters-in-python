@@ -29,6 +29,7 @@ from academy.application.ports.outbound.repositories import (
     ConfigurationRepository,
     GuardianshipRepository,
     PersonRepository,
+    SortKey,
 )
 from academy.application.ports.outbound.system import Clock
 from academy.domain.authorization.models import Action, ResourceType
@@ -154,12 +155,15 @@ class StudentRecords:
         return [PersonDto.of(ward) for ward in sorted(wards.values(), key=_by_name)]
 
 
-def _by_name(person: Person) -> tuple[str, str]:
+def _by_name(person: Person) -> SortKey:
     """Order a listing by name, with the id breaking ties into a total order.
 
-    The port promises no ordering, so this is the implementation being stricter than its
-    contract rather than satisfying it. A listing without a stable order is a paginated view
-    that shuffles under the reader, and two people share a name often enough to matter.
+    The same shape the repository ports promise for ``list_all``, and the same
+    :data:`~academy.application.ports.outbound.repositories.SortKey` type -- a listing is a
+    listing, whether storage produced the order or a use case did. This port promises no
+    ordering at all, so this is the implementation being stricter than its contract rather
+    than satisfying it: a listing without a stable order is a paginated view that shuffles
+    under the reader, and two people share a name often enough to matter.
     """
     return (person.personal.full_name, str(person.id))
 
