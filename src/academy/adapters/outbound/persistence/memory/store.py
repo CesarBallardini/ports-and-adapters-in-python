@@ -34,10 +34,11 @@ work in the same task, which is what makes that boundary the right one.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Hashable, ValuesView
 from contextvars import ContextVar, Token
 from copy import deepcopy
 from types import TracebackType
+from typing import Final
 
 from academy.domain.academics.course_section import CourseSection
 from academy.domain.grades.academic_history import AcademicHistory
@@ -62,7 +63,7 @@ type _Undo = Callable[[], None]
 # The transactions currently open, innermost last. Module-level and shared by every store,
 # because a ContextVar is meant to live for the life of the module; each entry knows which
 # store it belongs to, so several stores in one process do not see each other's transactions.
-_OPEN: ContextVar[tuple[_Transaction, ...]] = ContextVar('academy_memory_transactions', default=())
+_OPEN: Final[ContextVar[tuple[_Transaction, ...]]] = ContextVar('academy_memory_transactions', default=())
 
 
 class _Transaction:
@@ -106,12 +107,17 @@ class _Transaction:
         self._undo.clear()
 
 
-class Table[K, V]:
+class Table[K: Hashable, V]:
     """One table of the store, journalling every change into the open transaction.
 
     Internal to the memory adapter: repositories read and write it, nothing outside does. It
     deliberately offers only the handful of operations a repository needs, so that a mutation
     cannot arrive by a route that forgets to journal.
+
+    ``K`` is bound to ``Hashable`` because a row is found by dictionary lookup. Every key here
+    is one of the domain's id types, which are hashable by construction; the bound is what
+    makes that a checked fact rather than a convention, and it is the same bound
+    ``_MemoryRepository`` puts on the identity it indexes by.
 
     A row is never ``None``, which is what lets an undo entry use ``None`` to mean "this row
     did not exist" without a sentinel.
@@ -149,8 +155,12 @@ class Table[K, V]:
         """The row stored under this key, or ``None``."""
         return self._rows.get(key)
 
-    def values(self) -> Iterable[V]:
+    def values(self) -> ValuesView[V]:
         """Every stored row, in insertion order.
+
+        A view rather than an ``Iterable``: callers filter it, count it and iterate it more
+        than once, none of which an iterator would survive, and every one of which the type
+        now promises. It is a live view, which is why repositories copy what they hand out.
 
         The repositories sort what they hand out, so this order is an implementation detail
         and not something a port promises.
