@@ -13,8 +13,10 @@ contract suite says which one is wrong.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Hashable
+from typing import ClassVar
 
-from academy.adapters.outbound.persistence.memory.store import MemoryStore
+from academy.adapters.outbound.persistence.memory.store import MemoryStore, Table
 from academy.application.errors import ConflictError, NotFoundError
 from academy.domain.academics.course_section import CourseSection
 from academy.domain.academics.term import Term
@@ -24,28 +26,48 @@ from academy.domain.people.age_of_majority import AgeOfMajority
 from academy.domain.people.person import Person
 from academy.domain.shared.ids import CredentialId, GuardianshipId, PersonId, SectionId, SubjectId
 
+# What a listing is ordered by: an aggregate's natural key, rendered as strings and ending in
+# its id so that two records sharing a natural key still have a total order. Strings rather
+# than the domain's own types because the orderings the ports promise are lexicographic, and a
+# tuple mixing `str` with `UUID` would not compare at all.
+#
+# Comments rather than attribute docstrings: the check-docstring-first hook reads a string
+# literal after a module-level assignment as a second module docstring.
+type SortKey = tuple[str, ...]
 
-class _MemoryRepository[E, IdT](ABC):
+
+class _MemoryRepository[E, IdT: Hashable](ABC):
     """The five storage operations every aggregate needs, over one table of the store.
 
     Subclasses say which table, how to read an aggregate's identity, and what its natural
     key is; everything else -- the copy discipline and the ``None``/``NotFoundError``
     asymmetry -- is decided once, here.
+
+    ``IdT`` is bound to ``Hashable`` because it indexes a :class:`Table`, which is a dictionary
+    underneath. The domain's id types satisfy it; the bound is what stops a future aggregate
+    keyed by something unhashable from failing at the first write instead of at the type check.
     """
 
-    entity_name = 'entity'
-    """How the aggregate is named in error messages."""
+    entity_name: ClassVar[str] = 'entity'
+    """How the aggregate is named in error messages.
+
+    ``ClassVar``, because it is configuration a subclass overrides once for the whole class,
+    not state an instance carries. Without it, the annotation would invite an instance to set
+    its own and two repositories over the same table could name it differently.
+    """
 
     def __init__(self, store: MemoryStore) -> None:
         """Bind the repository to the store it reads and writes.
 
-        The *store*, not the table: a rollback replaces the table objects wholesale, and a
-        repository holding a direct reference would go on reading the discarded one.
+        The *store*, not the table: every repository then reaches its table the same way, and
+        the tables stay the store's to hand out. Rollback no longer replaces them -- it puts
+        individual rows back (see :mod:`~academy.adapters.outbound.persistence.memory.store`)
+        -- so holding a table would now be safe, and still says less about where state lives.
         """
         self._store = store
 
     @abstractmethod
-    def _table(self) -> dict[IdT, E]:
+    def _table(self) -> Table[IdT, E]:
         """The store table this repository owns."""
 
     @abstractmethod
@@ -53,7 +75,7 @@ class _MemoryRepository[E, IdT](ABC):
         """The aggregate's identifier."""
 
     @abstractmethod
-    def _sort_key(self, entity: E) -> tuple[str, ...]:
+    def _sort_key(self, entity: E) -> SortKey:
         """The natural key ``list_all`` orders by, ending in the id to break ties."""
 
     async def get(self, entity_id: IdT) -> E | None:
@@ -113,13 +135,13 @@ class MemoryPersonRepository(_MemoryRepository[Person, PersonId]):
 
     entity_name = 'person'
 
-    def _table(self) -> dict[PersonId, Person]:
+    def _table(self) -> Table[PersonId, Person]:
         return self._store.people
 
     def _identity(self, entity: Person) -> PersonId:
         return entity.id
 
-    def _sort_key(self, entity: Person) -> tuple[str, ...]:
+    def _sort_key(self, entity: Person) -> SortKey:
         return (entity.email.value, str(entity.id))
 
     async def add(self, entity: Person) -> None:
@@ -181,13 +203,13 @@ class MemorySectionRepository(_MemoryRepository[CourseSection, SectionId]):
 
     entity_name = 'course section'
 
-    def _table(self) -> dict[SectionId, CourseSection]:
+    def _table(self) -> Table[SectionId, CourseSection]:
         return self._store.sections
 
     def _identity(self, entity: CourseSection) -> SectionId:
         return entity.id
 
-    def _sort_key(self, entity: CourseSection) -> tuple[str, ...]:
+    def _sort_key(self, entity: CourseSection) -> SortKey:
         return (entity.term.label(), str(entity.subject_id), str(entity.id))
 
     async def for_teacher(self, teacher_id: PersonId) -> list[CourseSection]:
@@ -230,13 +252,13 @@ class MemoryAcademicHistoryRepository(_MemoryRepository[AcademicHistory, PersonI
 
     entity_name = 'academic history'
 
-    def _table(self) -> dict[PersonId, AcademicHistory]:
+    def _table(self) -> Table[PersonId, AcademicHistory]:
         return self._store.histories
 
     def _identity(self, entity: AcademicHistory) -> PersonId:
         return entity.student_id
 
-    def _sort_key(self, entity: AcademicHistory) -> tuple[str, ...]:
+    def _sort_key(self, entity: AcademicHistory) -> SortKey:
         return (str(entity.student_id),)
 
     async def get_or_create(self, student_id: PersonId) -> AcademicHistory:
@@ -268,13 +290,13 @@ class MemoryGuardianshipRepository(_MemoryRepository[Guardianship, GuardianshipI
 
     entity_name = 'guardianship'
 
-    def _table(self) -> dict[GuardianshipId, Guardianship]:
+    def _table(self) -> Table[GuardianshipId, Guardianship]:
         return self._store.guardianships
 
     def _identity(self, entity: Guardianship) -> GuardianshipId:
         return entity.id
 
-    def _sort_key(self, entity: Guardianship) -> tuple[str, ...]:
+    def _sort_key(self, entity: Guardianship) -> SortKey:
         return (str(entity.guardian_id), str(entity.ward_id), str(entity.id))
 
     async def wards_of(self, guardian_id: PersonId) -> list[Guardianship]:
