@@ -6,23 +6,29 @@
 # fail_under is a hard gate, not a report: `pytest --cov` exits non-zero below
 # it, so a coverage drop fails CI the same way a lint or type error does.
 #
-# The floor was 70 while the hexagon was being built outward. The contract suite
-# (ADR-0014) now asserts the repository ports against the in-memory adapter and
-# the clock adapters are exercised, so measured coverage is ~93% and the floor
-# moves to 90.
+# The floor was 70 while the hexagon was being built outward, then 90 once the
+# contract suite (ADR-0014) and the clock adapters landed. The CLI closed Phase
+# C's first adapter with every one of its modules at 100%, so measured coverage
+# is ~97% and the floor moves to 95.
 #
-# The remaining gap is deliberate and is mostly one thing: the port modules that
-# nothing imports yet sit at 0%, because a `Protocol` body never executes until
-# an adapter implements it. Those recover on their own in Phase B. Do not buy
-# them with an import statement in a test -- it would move the number without
-# moving the risk. The rest is the copied domain, whose tests are copied too and
-# cannot be added to (ADR-0002).
+# The slack is deliberate and is not padding: a floor set at exactly today's
+# number fails the moment a new adapter lands ahead of its contract tests, which
+# punishes the order this repository builds in.
 #
-# Raise it again as each phase closes, but keep a little slack: a floor set at
-# exactly today's number fails the moment a new adapter lands ahead of its
-# contract tests.
+# The remaining gap is two things, both measured rather than guessed. The port
+# modules nothing implements yet sit at 0%, because a `Protocol` body never
+# executes until an adapter satisfies it -- `notifications` and `identity` are
+# the whole list, and both recover when the web adapter lands. The rest is the
+# copied domain, whose tests are copied too and cannot be added to (ADR-0002).
+# `src/academy/__main__.py` is a third, smaller case: it is covered by the e2e
+# tier, in a subprocess coverage does not measure.
+#
+# Do not buy any of them with a test written for the number. An import statement
+# that lights up a port module moves the figure without moving the risk.
+#
+# Raise it again as each phase closes.
 
 [report]
-fail_under = 90
+fail_under = 95
 show_missing = true
 precision = 0

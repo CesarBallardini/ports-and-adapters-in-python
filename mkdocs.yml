@@ -90,4 +90,6 @@ nav:
       - ADR-0016 Who may read a section grade sheet: decisions/0016-who-may-read-a-section-grade-sheet.md
       - ADR-0017 Value-object collections as serialised columns: decisions/0017-value-object-collections-as-serialised-columns.md
       - ADR-0018 Two database roles: decisions/0018-two-database-roles.md
+      - ADR-0019 One failure classification, rendered per inbound adapter: decisions/0019-one-failure-classification-rendered-per-adapter.md
+      - ADR-0020 argparse for the CLI, with the actor named by --as: decisions/0020-argparse-cli-with-an-asserted-actor.md
   - API reference: reference.md

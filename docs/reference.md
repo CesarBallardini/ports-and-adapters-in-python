@@ -61,6 +61,23 @@ The in-memory ones are production-grade adapters, not test doubles.
 
 ::: academy.adapters.outbound.system.clock
 
+## Driving adapters
+
+Each translates one protocol — argv, an HTTP form post, a queue message — into a
+call on a driving port, and holds no business rule. Expected failures are
+classified once, in a table every one of them shares, and rendered by each in
+its own vocabulary (ADR-0019).
+
+::: academy.adapters.inbound.error_status
+
+::: academy.adapters.inbound.cli
+
+::: academy.adapters.inbound.cli.parser
+
+::: academy.adapters.inbound.cli.commands
+
+::: academy.adapters.inbound.cli.exit_codes
+
 ## Composition root
 
 The only code allowed to know both a port and the adapter behind it, wired by

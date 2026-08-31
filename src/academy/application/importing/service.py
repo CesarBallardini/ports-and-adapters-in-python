@@ -140,6 +140,7 @@ class ImportService:
                     kind=command.kind,
                     data=command.data,
                     content_type=command.content_type,
+                    filename=command.filename,
                     dry_run=command.dry_run,
                     context=command.context,
                 )
@@ -153,7 +154,13 @@ class ImportService:
             submitted_at=self._clock.now(),
             context=_context(command.context),
         )
-        job.storage_key = f'imports/{job.id}'
+        # The key carries the format's extension, and that is the only record of it: an
+        # `ImportJob` has no content type and the worker has no upload to ask. Deciding the
+        # format here, where the MIME type and the filename are both still in hand, is what
+        # stops a queued XLSX being read back by the default CSV reader -- which is what
+        # happened before this line existed, and which failed every large XLSX upload.
+        extension = self._formats.extension_for(command.content_type, command.filename)
+        job.storage_key = f'imports/{job.id}{extension}'
         await self._storage.put(job.storage_key, command.data)
 
         unit_of_work = self._unit_of_work()
@@ -199,6 +206,11 @@ class ImportService:
                     actor=actor,
                     kind=job.kind,
                     data=data,
+                    # The storage key is the only thing that remembers what format was
+                    # submitted, which is why `submit` gave it an extension. A key from before
+                    # that -- or from a deployment whose formats have no extension -- has none,
+                    # and falls back to the default reader as it always did.
+                    filename=job.storage_key,
                     context=job.context,
                 )
             )
@@ -311,7 +323,7 @@ class ImportService:
             AuthorizationError: If the actor may not run this importer.
             NotFoundError: If the context names something that does not exist.
         """
-        reader = self._formats.reader_for(command.content_type)
+        reader = self._formats.reader_for(command.content_type, command.filename)
         rows = reader.read_rows(command.data)
         importer = self._importer_for(command.kind)
 

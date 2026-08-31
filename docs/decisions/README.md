@@ -24,3 +24,5 @@ references it, never edited in place.
 | [0016](./0016-who-may-read-a-section-grade-sheet.md) | A grade sheet is readable only by someone who may read every person on it | Accepted |
 | [0017](./0017-value-object-collections-as-serialised-columns.md) | Value-object collections are stored as serialised columns | Accepted |
 | [0018](./0018-two-database-roles.md) | Two database roles: migrations own the schema, the application owns the data | Accepted |
+| [0019](./0019-one-failure-classification-rendered-per-adapter.md) | One failure classification, rendered per inbound adapter | Accepted |
+| [0020](./0020-argparse-cli-with-an-asserted-actor.md) | argparse for the CLI, with the actor named by `--as` | Accepted |
