@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Protocol, runtime_checkable
 
+from academy.application.jobs import JobId
 from academy.domain.shared.ids import (
     CredentialId,
     GraduationId,
@@ -103,4 +104,14 @@ class IdGenerator(Protocol):
 
     def next_guardianship_id(self) -> GuardianshipId:
         """A fresh guardianship identifier."""
+        ...
+
+    def next_job_id(self) -> JobId:
+        """A fresh import-job identifier.
+
+        The one identifier here that is not a domain id, because an import job is not a domain
+        thing (see :mod:`academy.application.jobs`). It is generated the same way all the same:
+        an id is assigned before the job is stored, so that the payload can be written under a
+        key derived from it and the queue can carry it, all before anything is committed.
+        """
         ...

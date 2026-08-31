@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from academy.application.dtos import Actor
-from academy.application.jobs import ImportKind
+from academy.application.jobs import ImportContext, ImportKind
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,7 +94,7 @@ class ImportSpreadsheetCommand:
     data: bytes
     content_type: str = ''
     dry_run: bool = False
-    context: dict[str, str] | None = None
+    context: ImportContext | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,7 +113,7 @@ class SubmitImportCommand:
     filename: str = ''
     content_type: str = ''
     dry_run: bool = False
-    context: dict[str, str] | None = None
+    context: ImportContext | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,7 +133,7 @@ class DownloadTemplateCommand:
     actor: Actor
     kind: ImportKind
     file_format: str = 'xlsx'
-    context: dict[str, str] | None = None
+    context: ImportContext | None = None
 
 
 @dataclass(frozen=True, slots=True)

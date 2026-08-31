@@ -18,6 +18,7 @@ from typing import ClassVar
 
 from academy.adapters.outbound.persistence.memory.store import MemoryStore, Table
 from academy.application.errors import ConflictError, NotFoundError
+from academy.application.jobs import ImportJob, JobId, JobStatus
 from academy.application.ports.outbound.repositories import SortKey
 from academy.domain.academics.course_section import CourseSection
 from academy.domain.academics.term import Term
@@ -318,3 +319,48 @@ class MemoryConfigurationRepository:
     async def set_age_of_majority(self, age: AgeOfMajority) -> None:
         """Set the global age of majority."""
         self._store.age_of_majority = age
+
+
+class MemoryImportJobRepository(_MemoryRepository[ImportJob, JobId]):
+    """Queued and completed import jobs, ordered by submission time."""
+
+    entity_name = 'import job'
+
+    def _table(self) -> Table[JobId, ImportJob]:
+        return self._store.jobs
+
+    def _identity(self, entity: ImportJob) -> JobId:
+        return entity.id
+
+    def _sort_key(self, entity: ImportJob) -> SortKey:
+        return (entity.submitted_at.isoformat(), str(entity.id))
+
+    async def claim_next_pending(self) -> ImportJob | None:
+        """Take the oldest pending job and mark it running, in one step.
+
+        Atomic here because nothing awaits between the read and the write: this coroutine
+        cannot be suspended in the middle, so two workers in one event loop cannot both see
+        the same pending job. The SQLAlchemy adapter has to buy the same guarantee with
+        ``SELECT ... FOR UPDATE SKIP LOCKED``, and the contract suite is what makes sure it
+        did -- a claim that is not atomic runs every import twice.
+        """
+        pending = sorted(
+            (job for job in self._table().values() if job.status is JobStatus.PENDING),
+            key=self._sort_key,
+        )
+        if not pending:
+            return None
+
+        claimed = MemoryStore.copy_out(pending[0])
+        claimed.mark_running()
+        self._table()[claimed.id] = MemoryStore.copy_in(claimed)
+        return claimed
+
+    async def with_status(self, status: JobStatus) -> list[ImportJob]:
+        """Every job currently in this state, oldest first."""
+        return self._sorted([job for job in self._table().values() if job.status is status])
+
+    async def submitted_by(self, person_id: PersonId) -> list[ImportJob]:
+        """Every job this person submitted, newest first."""
+        theirs = [job for job in self._table().values() if job.submitted_by == str(person_id)]
+        return self._copies(sorted(theirs, key=self._sort_key, reverse=True))
