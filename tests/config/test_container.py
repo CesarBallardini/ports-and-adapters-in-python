@@ -6,16 +6,22 @@ is mocked. What these assert is the thing a container library would otherwise be
 two lifetimes are the ones the ADR describes.
 """
 
+import asyncio
 from datetime import UTC, date, datetime
+from pathlib import Path
 from uuid import UUID
 
 import pytest
+from sqlalchemy.exc import OperationalError
 
+from academy.adapters.outbound.persistence.sqlalchemy.session import migrate_to_head
 from academy.adapters.outbound.system import FixedClock, SystemClock
-from academy.application.commands import RecordGradeCommand, ViewAcademicHistoryCommand
-from academy.application.dtos import Actor
+from academy.application.commands import RecordGradeCommand, SubmitImportCommand, ViewAcademicHistoryCommand
+from academy.application.dtos import Actor, ImportResultDto
 from academy.application.errors import AuthorizationError
+from academy.application.jobs import ImportJob, ImportKind, JobStatus
 from academy.application.ports.inbound.grading import ManageGrades
+from academy.application.ports.inbound.imports import ImportData
 from academy.application.ports.inbound.records import ViewStudentRecords
 from academy.config import ENV_PERSISTENCE, ConfigurationError, Container, Defaults, PersistenceBackend, Settings
 from academy.domain.academics.course_section import CourseSection
@@ -132,11 +138,44 @@ def test_settings_come_from_the_environment() -> None:
 
 @pytest.mark.unit
 def test_a_variable_the_settings_do_not_define_is_ignored() -> None:
-    # ACADEMY_DATABASE_URL arrives with the SQLAlchemy adapter. Until then it is the
-    # integration suite's business alone, and setting it must not change how a process runs.
-    settings = Settings.from_env({'ACADEMY_DATABASE_URL': 'postgresql+asyncpg://db/academy'})
+    # Something plausible that this system has no setting for. Setting it must not change how
+    # a process runs, and must not be an error either -- an environment is shared, and half of
+    # what is in it belongs to something else.
+    settings = Settings.from_env({'ACADEMY_LOG_LEVEL': 'debug'})
 
     assert settings == Settings()
+
+
+@pytest.mark.unit
+def test_the_application_reads_its_own_database_url() -> None:
+    settings = Settings.from_env({'ACADEMY_DATABASE_URL': 'postgresql+asyncpg://app@db/academy'})
+
+    assert settings.database_url == 'postgresql+asyncpg://app@db/academy'
+
+
+@pytest.mark.unit
+def test_migrations_use_their_own_url_when_one_is_given() -> None:
+    # Two roles, because migrations own the schema and the application owns the data
+    # (ADR-0018). The application's URL must not become the migrator's by accident.
+    settings = Settings.from_env(
+        {
+            'ACADEMY_DATABASE_URL': 'postgresql+asyncpg://app@db/academy',
+            'ACADEMY_MIGRATION_DATABASE_URL': 'postgresql+asyncpg://migrator@db/academy',
+        }
+    )
+
+    assert settings.database_url == 'postgresql+asyncpg://app@db/academy'
+    assert settings.migration_database_url == 'postgresql+asyncpg://migrator@db/academy'
+
+
+@pytest.mark.unit
+def test_migrations_fall_back_to_the_application_url() -> None:
+    # What a developer on SQLite has: one URL, one file, and no roles to separate. The
+    # fallback is a convenience with a cost, and the cost is that a PostgreSQL deployment
+    # which forgets the second URL silently migrates as the application role.
+    settings = Settings.from_env({'ACADEMY_DATABASE_URL': 'sqlite+aiosqlite:///./academy.db'})
+
+    assert settings.migration_database_url == settings.database_url
 
 
 @pytest.mark.unit
@@ -171,15 +210,52 @@ def test_the_backend_names_are_the_deployment_facing_contract() -> None:
 
 
 @pytest.mark.unit
-def test_a_backend_without_an_adapter_fails_at_startup() -> None:
-    # Delete this test when the SQLAlchemy adapter lands in Phase B: the point of it is that
-    # the refusal happens while the process is starting, not on the first request.
-    with pytest.raises(ConfigurationError) as failure:
-        Container(Settings(persistence=PersistenceBackend.SQLALCHEMY))
+async def test_the_sqlalchemy_backend_serves_the_same_ports(tmp_path: Path) -> None:
+    # This replaces the test that asserted the SQLAlchemy branch *refused* to start, which was
+    # written to be deleted the day the adapter landed. It has landed, and what matters now is
+    # that a scope over it hands out the same ports the memory backend does -- nothing above
+    # the composition root can tell which is underneath.
+    url = f'sqlite+aiosqlite:///{(tmp_path / "academy_development.db").as_posix()}'
+    await asyncio.to_thread(migrate_to_head, url)
 
-    # Naming the variable matters as much as refusing: whoever reads this line in a crash log
-    # is looking for what to change, not for which of our classes noticed.
-    assert ENV_PERSISTENCE in str(failure.value)
+    container = Container(
+        Settings(
+            persistence=PersistenceBackend.SQLALCHEMY,
+            database_url=url,
+            upload_directory=str(tmp_path / 'uploads'),
+        ),
+        clock=FixedClock(datetime(TODAY.year, TODAY.month, TODAY.day, 9, 0, tzinfo=UTC)),
+    )
+    try:
+        async with container.request_scope() as scope:
+            await scope.people.add(_person(TEACHER, 'Grace Hopper', date(1980, 1, 1), Role.TEACHER))
+            stored = await scope.people.get(TEACHER)
+
+            assert stored is not None
+            assert isinstance(scope.grade_management(), ManageGrades)
+            assert isinstance(scope.student_records(), ViewStudentRecords)
+            assert isinstance(scope.import_data(), ImportData)
+    finally:
+        await container.aclose()
+
+
+@pytest.mark.unit
+async def test_a_container_does_not_migrate_its_own_database(tmp_path: Path) -> None:
+    # The application connects as a role that cannot issue DDL (ADR-0018), so it must not try.
+    # Against an unmigrated database the first query fails -- which is the honest outcome, and
+    # far better than a process that quietly repairs a schema two instances are racing on.
+    url = f'sqlite+aiosqlite:///{(tmp_path / "never_migrated.db").as_posix()}'
+    container = Container(
+        Settings(persistence=PersistenceBackend.SQLALCHEMY, database_url=url),
+        clock=FixedClock(datetime(TODAY.year, TODAY.month, TODAY.day, 9, 0, tzinfo=UTC)),
+    )
+
+    try:
+        with pytest.raises(OperationalError, match='no such table'):
+            async with container.request_scope() as scope:
+                await scope.people.get(TEACHER)
+    finally:
+        await container.aclose()
 
 
 @pytest.mark.unit
@@ -189,9 +265,15 @@ def test_a_container_starts_from_an_empty_environment() -> None:
 
 
 @pytest.mark.unit
-def test_the_environment_reaches_the_container_not_just_the_settings() -> None:
-    with pytest.raises(ConfigurationError):
-        Container.from_env({'ACADEMY_PERSISTENCE': 'sqlalchemy'})
+def test_the_environment_reaches_the_container_not_just_the_settings(tmp_path: Path) -> None:
+    # Parsing the environment correctly and then ignoring the result would pass every settings
+    # test in this file.
+    url = f'sqlite+aiosqlite:///{(tmp_path / "academy_development.db").as_posix()}'
+
+    container = Container.from_env({'ACADEMY_PERSISTENCE': 'sqlalchemy', 'ACADEMY_DATABASE_URL': url})
+
+    assert container.settings.persistence is PersistenceBackend.SQLALCHEMY
+    assert container.settings.database_url == url
 
 
 @pytest.mark.unit
@@ -282,6 +364,61 @@ async def test_the_scope_builds_the_record_reading_use_cases(container: Containe
 
     assert isinstance(records, ViewStudentRecords)
     assert history.student_id == str(STUDENT)
+
+
+@pytest.mark.unit
+async def test_the_scope_builds_the_import_use_cases(container: Container) -> None:
+    await _seed(container)
+    sheet = b'student_email,grade\r\nada@academy.test,8\r\n'
+
+    async with container.request_scope() as scope:
+        imports = scope.import_data()
+        outcome = await imports.submit(
+            SubmitImportCommand(
+                actor=TEACHER_ACTOR,
+                kind=ImportKind.GRADE_SHEET,
+                data=sheet,
+                filename='grades.csv',
+                content_type='text/csv',
+                context={'section_id': str(SECTION)},
+            )
+        )
+
+    assert isinstance(imports, ImportData)
+    assert isinstance(outcome, ImportResultDto), 'a small file runs inline'
+    assert outcome.created == 1
+
+
+@pytest.mark.unit
+async def test_the_inline_queue_runs_a_queued_job_through_the_same_service() -> None:
+    # The knot the composition root ties: the queue calls the service that holds it. With a
+    # threshold of one byte every upload is queued, and the inline queue runs it before submit
+    # returns -- so the job comes back already done.
+    container = Container(
+        Settings(import_inline_threshold_bytes=1),
+        clock=FixedClock(datetime(TODAY.year, TODAY.month, TODAY.day, 9, 0, tzinfo=UTC)),
+    )
+    await _seed(container)
+    sheet = b'student_email,grade\r\nada@academy.test,8\r\n'
+
+    async with container.request_scope() as scope:
+        outcome = await scope.import_data().submit(
+            SubmitImportCommand(
+                actor=TEACHER_ACTOR,
+                kind=ImportKind.GRADE_SHEET,
+                data=sheet,
+                filename='grades.csv',
+                content_type='text/csv',
+                context={'section_id': str(SECTION)},
+            )
+        )
+        assert isinstance(outcome, ImportJob)
+        stored = await scope.jobs.get(outcome.id)
+
+    assert stored is not None
+    assert stored.status is JobStatus.DONE
+    assert stored.result is not None
+    assert stored.result.created == 1
 
 
 @pytest.mark.unit
