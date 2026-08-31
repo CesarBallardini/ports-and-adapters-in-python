@@ -83,6 +83,11 @@ class ImportSpreadsheetCommand:
         content_type: The uploaded MIME type, used only to choose a
             :class:`~academy.application.ports.outbound.spreadsheet.SpreadsheetReader`
             adapter. It never reaches the importing rules.
+        filename: What the upload was called, used only as the fallback when
+            ``content_type`` identifies nothing. A CLI reading a local file has a name and no
+            MIME type, and a browser sending ``application/octet-stream`` has told us nothing
+            while its user was quite clear when they named the file ``grades.xlsx``. Like
+            ``content_type``, it never reaches the importing rules.
         dry_run: Validate and report, then roll back, writing nothing. The most useful
             feature of the whole import surface: a registrar can find out what a file would
             do before it does it.
@@ -93,6 +98,7 @@ class ImportSpreadsheetCommand:
     kind: ImportKind
     data: bytes
     content_type: str = ''
+    filename: str = ''
     dry_run: bool = False
     context: ImportContext | None = None
 

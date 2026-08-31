@@ -20,8 +20,8 @@ contract suite into a description of whichever implementation was written first.
 """
 
 import asyncio
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -65,6 +65,9 @@ from academy.application.ports.outbound.repositories import (
 )
 from academy.domain.academics.course_section import CourseSection
 from academy.domain.academics.term import Term
+from academy.domain.grades.academic_history import AcademicHistory
+from academy.domain.grades.grade import Grade
+from academy.domain.grades.grade_entry import GradeEntry
 from academy.domain.guardianship.guardianship import Guardianship
 from academy.domain.people.age_of_majority import AgeOfMajority
 from academy.domain.people.email import Email
@@ -547,3 +550,194 @@ async def test_a_persons_jobs_come_back_newest_first(backend: Backend) -> None:
     theirs = await backend.jobs.submitted_by(ANN)
 
     assert [job.id for job in theirs] == [JobId(UUID(int=2)), JobId(UUID(int=1))]
+
+
+# --------------------------------------------------------------------------------------
+# Durability: a saved change is still there in the next transaction
+#
+# Every assertion above runs inside one open transaction, which is enough to check what a
+# repository *answers* and not enough to check what it *wrote*. The gap is not academic: the
+# SQLAlchemy adapter passed all of it while silently discarding every change to one of
+# ADR-0017's serialised collections, because a JSON column's change detection is by assignment
+# and the domain mutates in place -- and because a read back through the same session returns
+# the very object that was mutated, out of the identity map, whatever the database holds.
+#
+# So these commit, drop the session, and ask again. For the in-memory backend that is a no-op by
+# construction, which is exactly why the pair is parametrised together: the backend for which
+# the promise is trivial is the one that proves the promise belongs to the port.
+# --------------------------------------------------------------------------------------
+
+
+class Storage:
+    """A durable place to put aggregates, openable more than once.
+
+    The ``backend`` fixture above hands out one transaction; this hands out a *sequence* of them
+    over the same storage, which is the only way to ask whether a commit committed.
+    """
+
+    def __init__(self, open_transaction: Callable[[], AbstractAsyncContextManager[Backend]]) -> None:
+        """Bind the factory that opens one transaction's repositories."""
+        self._open_transaction = open_transaction
+
+    def transaction(self) -> AbstractAsyncContextManager[Backend]:
+        """Open one transaction, committing it on a clean exit."""
+        return self._open_transaction()
+
+
+@asynccontextmanager
+async def _memory_storage(_tmp_path: Path) -> AsyncIterator[Storage]:
+    """The in-memory backend, where the process is the database.
+
+    Nothing is committed because nothing was ever anywhere else. The store outlives each
+    transaction exactly as a database file does.
+    """
+    store = MemoryStore()
+
+    @asynccontextmanager
+    async def open_transaction() -> AsyncIterator[Backend]:
+        yield Backend(
+            people=MemoryPersonRepository(store),
+            sections=MemorySectionRepository(store),
+            histories=MemoryAcademicHistoryRepository(store),
+            guardianships=MemoryGuardianshipRepository(store),
+            configuration=MemoryConfigurationRepository(store),
+            jobs=MemoryImportJobRepository(store),
+        )
+
+    yield Storage(open_transaction)
+
+
+@asynccontextmanager
+async def _sqlalchemy_storage(tmp_path: Path) -> AsyncIterator[Storage]:
+    """The SQLAlchemy backend on a migrated SQLite file, one session per transaction."""
+    url = f'sqlite+aiosqlite:///{(tmp_path / "durable.db").as_posix()}'
+    await asyncio.to_thread(migrate_to_head, url)
+    engine = create_engine(url)
+    sessions = create_session_factory(engine)
+
+    @asynccontextmanager
+    async def open_transaction() -> AsyncIterator[Backend]:
+        async with sessions() as session:
+            yield Backend(
+                people=SqlAlchemyPersonRepository(session),
+                sections=SqlAlchemySectionRepository(session),
+                histories=SqlAlchemyAcademicHistoryRepository(session),
+                guardianships=SqlAlchemyGuardianshipRepository(session),
+                configuration=SqlAlchemyConfigurationRepository(session),
+                jobs=SqlAlchemyImportJobRepository(session),
+            )
+            await session.commit()
+
+    try:
+        yield Storage(open_transaction)
+    finally:
+        # Windows will not delete the temporary directory while a handle is open on the file.
+        await engine.dispose()
+
+
+STORAGES = [pytest.param(_memory_storage, id='memory'), pytest.param(_sqlalchemy_storage, id='sqlalchemy')]
+
+
+@pytest.fixture(params=STORAGES)
+async def storage(request: pytest.FixtureRequest, tmp_path: Path) -> AsyncIterator[Storage]:
+    """Durable storage, one per test, per implementation."""
+    async with request.param(tmp_path) as durable:
+        yield durable
+
+
+@pytest.mark.unit
+async def test_a_saved_scalar_change_is_there_in_the_next_transaction(storage: Storage) -> None:
+    # The control. A scalar column is tracked by assignment, so this passed before the fix and
+    # is here to say that what the next five test is the collections, not `save` in general.
+    async with storage.transaction() as backend:
+        await backend.people.add(_person(ANN, 'ann'))
+    async with storage.transaction() as backend:
+        person = await backend.people.get(ANN)
+        assert person is not None
+        person.personal = PersonalData(full_name='Ann Renamed', birth_date=person.personal.birth_date)
+        await backend.people.save(person)
+
+    async with storage.transaction() as backend:
+        stored = await backend.people.get(ANN)
+        assert stored is not None
+        assert stored.personal.full_name == 'Ann Renamed'
+
+
+@pytest.mark.unit
+async def test_a_role_granted_and_saved_is_still_granted_in_the_next_transaction(storage: Storage) -> None:
+    async with storage.transaction() as backend:
+        await backend.people.add(_person(ANN, 'ann', Role.STUDENT))
+    async with storage.transaction() as backend:
+        person = await backend.people.get(ANN)
+        assert person is not None
+        person.grant_role(Role.TEACHER)
+        await backend.people.save(person)
+
+    async with storage.transaction() as backend:
+        stored = await backend.people.get(ANN)
+        assert stored is not None
+        assert stored.roles == frozenset({Role.STUDENT, Role.TEACHER})
+
+
+@pytest.mark.unit
+async def test_a_credential_held_and_saved_is_still_held_in_the_next_transaction(storage: Storage) -> None:
+    async with storage.transaction() as backend:
+        await backend.people.add(_person(ANN, 'ann'))
+    async with storage.transaction() as backend:
+        person = await backend.people.get(ANN)
+        assert person is not None
+        person.hold_credential(DEGREE)
+        await backend.people.save(person)
+
+    async with storage.transaction() as backend:
+        stored = await backend.people.get(ANN)
+        assert stored is not None
+        assert stored.held_credentials == frozenset({DEGREE})
+
+
+@pytest.mark.unit
+async def test_an_enrollment_added_and_saved_is_still_enrolled_in_the_next_transaction(storage: Storage) -> None:
+    async with storage.transaction() as backend:
+        await backend.sections.add(_section(TEACHING, MATH, THIS_TERM, CAL, ANN))
+    async with storage.transaction() as backend:
+        section = await backend.sections.get(TEACHING)
+        assert section is not None
+        section.enroll(BEA)
+        await backend.sections.save(section)
+
+    async with storage.transaction() as backend:
+        stored = await backend.sections.get(TEACHING)
+        assert stored is not None
+        assert stored.students() == frozenset({ANN, BEA})
+
+
+@pytest.mark.unit
+async def test_a_recorded_grade_is_still_recorded_in_the_next_transaction(storage: Storage) -> None:
+    # The one that was actually broken. Recording a grade through the CLI reported the new
+    # standing, committed without complaint, and left the row exactly as it was.
+    async with storage.transaction() as backend:
+        await backend.histories.add(AcademicHistory(student_id=ANN))
+    async with storage.transaction() as backend:
+        history = await backend.histories.get_or_create(ANN)
+        history.record(GradeEntry(subject_id=MATH, term=THIS_TERM, grade=Grade(7)))
+        await backend.histories.save(history)
+
+    async with storage.transaction() as backend:
+        stored = await backend.histories.get(ANN)
+        assert stored is not None
+        assert [entry.grade.value for entry in stored.entries] == [7]
+
+
+@pytest.mark.unit
+async def test_a_history_created_on_first_use_survives_the_transaction_that_created_it(storage: Storage) -> None:
+    # `get_or_create` promises the created history is *stored*, not merely returned. Asserting
+    # that inside one transaction only proves it reached the session.
+    async with storage.transaction() as backend:
+        history = await backend.histories.get_or_create(BEA)
+        history.record(GradeEntry(subject_id=PHYSICS, term=THIS_TERM, grade=Grade(9)))
+        await backend.histories.save(history)
+
+    async with storage.transaction() as backend:
+        stored = await backend.histories.get(BEA)
+        assert stored is not None
+        assert [entry.grade.value for entry in stored.entries] == [9]

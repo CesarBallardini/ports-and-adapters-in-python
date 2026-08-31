@@ -65,7 +65,7 @@ behaviour, sequence diagrams assign the responsibilities, the class diagram is w
 | 04 | [State diagrams](./docs/04-state-diagrams.md) | What lifecycles exist, and what is stored versus computed? |
 | 05 | [Domain model](./docs/05-domain-model.md) | What are the entities, value objects and invariants? |
 | 06 | [Class diagram](./docs/06-class-diagram.md) | What classes result, in which layer? |
-| — | [Decisions](./docs/decisions/) | 14 ADRs: why each choice was made, and what was rejected |
+| — | [Decisions](./docs/decisions/) | 20 ADRs: why each choice was made, and what was rejected |
 
 ## Architecture
 
@@ -104,11 +104,14 @@ Honest state of the work, since this is a repository under construction:
 | Tooling scaffold — uv, ruff, pyright, pyrefly, bandit, pre-commit, CI | done, green |
 | Domain layer + its unit tests, copied verbatim | done, green |
 | Design documentation — 01 to 06 | done |
-| 14 ADRs | done |
+| 20 ADRs | done |
 | Application layer — driven ports, driving ports, DTOs, commands, authorization | done, green |
-| Use case implementations | **in progress** |
-| Outbound adapters — in-memory, SQLAlchemy, csv/openpyxl, storage, queue | **not yet implemented** |
-| Inbound adapters — htmx web, JSON API, CLI, worker — and the composition root | **not yet implemented** |
+| Use cases — grading, student records, bulk import | done, green |
+| Outbound adapters — in-memory, SQLAlchemy + Alembic, csv/openpyxl, storage, queue | done, green |
+| Composition root — settings, container, per-request scope | done, green |
+| Inbound adapter — CLI (`python -m academy`) | done, green |
+| Inbound adapters — htmx web, JSON API, worker | **not yet implemented** |
+| Remaining repositories — programs, subjects, credentials, graduations, plan enrollments | **not yet implemented** |
 
 ## Getting started
 
@@ -127,6 +130,34 @@ make lint types arch test coverage security
 ```
 
 Everything goes through the Makefile; `make` with no target lists every one.
+
+### Running it
+
+The CLI is the first driving adapter, and the smallest — no framework, no server, no extras
+([ADR-0020](./docs/decisions/0020-argparse-cli-with-an-asserted-actor.md)):
+
+```bash
+python -m academy config show                     # every setting, defaults resolved
+python -m academy grades list <SECTION> --as teacher@example.edu
+python -m academy import template --format csv --section <SECTION> \
+    --output grades.csv --as teacher@example.edu
+python -m academy import run grades.csv --section <SECTION> --dry-run \
+    --as teacher@example.edu
+```
+
+`--as` names the person to act as and the CLI trusts it: identity is **asserted, not
+authenticated**, because anyone who can run the command already holds the database credentials.
+Authorization is not bypassed — the same `AccessPolicy` that refuses a student over HTTP refuses
+them here.
+
+Two things are interfaces and the prose is not: `--json` on any command, and the exit status —
+`0` ok, `2` usage, `3` validation, `4` not found, `5` conflict, `6` forbidden, `7` too large,
+`8` rule, `9` configuration, `10` import incomplete
+([ADR-0019](./docs/decisions/0019-one-failure-classification-rendered-per-adapter.md)). So
+`import run --dry-run` is worth putting in CI: it exits non-zero when a row would be rejected.
+
+Configuration is environment variables read once at startup, all prefixed `ACADEMY_`, so
+`env | grep ACADEMY_` is a deployment's entire configuration. With none set it runs in memory.
 
 ### The gates
 

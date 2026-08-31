@@ -5,7 +5,7 @@ It is the second half of a diptych with `localenv-python` (tooling) and the cont
 `multi-tenant-python`'s roadmap.
 
 Read `docs/` in numbered order: description → use cases → sequence diagrams → state diagrams →
-domain model → class diagram. Decisions live in `docs/decisions/` as ADR-0001..0014, and are
+domain model → class diagram. Decisions live in `docs/decisions/` as ADR-0001..0020, and are
 the first place to look before changing anything structural.
 
 ## The one rule that outranks the others
@@ -47,9 +47,9 @@ At the end of every phase, deliberately look for tests to add across **all tiers
 integration, acceptance, e2e — not only the tier the phase was about. Write the ones that carry
 their weight.
 
-`make test-bdd` and `make test-e2e` carry an `ALLOW_EMPTY_TIER` guard, because pytest exits 5
-when a marker selects nothing and those tiers are unwritten. **Delete the guard from a target
-the moment that tier gets its first test**, or an empty tier goes back to passing silently.
+`ALLOW_EMPTY_TIER` is **gone**. It existed because pytest exits 5 when a marker selects nothing,
+which was noise while a tier was unwritten; every tier now has tests, so an empty selection is a
+signal again and each target says so. Do not reintroduce it.
 
 ### Rule 2 — Post-test typing review
 
@@ -112,8 +112,12 @@ job manage their own gitleaks).
   behaviour, and a Jinja2 template must not be able to cause a side effect.
 - **One implementation class per port, not per use case.** Use cases are methods; a large one
   delegates to a collaborator (`ImportService` → `RowImporter`) rather than growing.
-- **Domain errors are translated once**, by the declarative table in
-  `adapters/inbound/error_status.py` (ADR-0012). Routers contain no `except DomainError`.
+- **Domain errors are classified once**, by the declarative table in
+  `adapters/inbound/error_status.py` (ADR-0012), which produces a `Failure` and **not** a status
+  code — each inbound adapter renders that in its own vocabulary (ADR-0019): an HTTP status, a
+  CLI exit code, a worker's retry decision. Handlers contain no `except DomainError`. A new
+  `ApplicationError` must be added to the table, and a test fails if it is not; a new
+  `DomainError` falls through to `RULE` on purpose, because the domain is copied.
 - **US spelling**, matching the domain's own: `enroll`, `enrollment`.
 - **English** in code, comments, docstrings and docs.
 - **Mermaid** for all diagrams, inline in markdown.
@@ -145,6 +149,44 @@ Two adapters, one contract suite, and a rule that shapes both.
   their environment (`academy_production`, `academy_test`) and the schema is `academy`, selected
   per role with `search_path` rather than written into the table names, because a qualified
   `academy.people` is DDL SQLite cannot run.
+- **A JSON collection must be named in `mutable_collections`, or its changes are lost.** A JSON
+  column's change detection is by attribute *assignment*, and the domain mutates in place
+  (`history.record(...)` appends). The ORM then compares the loaded value against the caller's
+  value, finds the same mutated object, and emits no `UPDATE` — a `save` that returns cleanly, a
+  `commit` that succeeds, and an unchanged row. `_SqlAlchemyRepository.save` calls
+  `flag_modified` for every attribute a repository names there; a new serialised collection has
+  to be added to that tuple. The bug is invisible to any test that reads back through the same
+  session, because the identity map returns the very object that was mutated — which is why the
+  contract suite's last six tests commit, drop the session, and ask again.
+
+## Inbound adapters
+
+One exists so far — the CLI — and it sets the shape the others follow.
+
+- **Four modules along the seam that matters**: `parser.py` owns the grammar and imports no
+  handler; `commands.py` owns the handlers and parses no argv; `render.py` owns the output and
+  touches no domain object; `main.py` owns the control flow and holds **the one error boundary**.
+  The two halves meet at a single dict from command name to handler, and a test asserts the join
+  is total.
+- **A handler takes one driving port, never the `Scope`.** A scope carries every repository as
+  well as every use case, so a handler holding one could read a transcript straight out of
+  `scope.histories` and never call a use case — a rule leaking into an adapter, one step away.
+  `Command[PortT]` pairs a handler with the accessor for its port (`Command(Scope.student_records,
+  records_show)`), checks the pairing once, and is itself a uniform `Handler` — so the table stays
+  flat without an `Any`. A mispaired row does not type-check. Exactly two places may name a
+  `Scope`: `Command.__call__` and `main._execute`.
+- **`Args` is where `argparse`'s `Any` stops.** A `Namespace` attribute is `Any`, so reading one
+  straight into a command object would lose exactly the checking two type checkers are run to
+  get. Narrowing is a run-time check and not a cast, because the values genuinely arrive untyped.
+- **`--as <email>` is asserted, not authenticated** (ADR-0020). The CLI's credential is the
+  database URL, so a second one would guard a door in a missing wall. Authorization is untouched:
+  the actor is refused wherever the policy refuses. Roles come from the person record on every
+  invocation, never from an id alone.
+- **Exit codes and `--json` are the interface; the prose is not.** A test may assert a code or a
+  JSON key exactly, and should assert of a human line only what a person would complain about.
+- Errors are never caught in a handler. `main` catches `ConfigurationError` (exit 9),
+  `ApplicationError` and `DomainError` (the table decides), and lets everything else escape with
+  its traceback — which exits 1, the same status `Failure`-less classification means.
 
 ## Things that bite
 
@@ -167,6 +209,16 @@ Two adapters, one contract suite, and a rule that shapes both.
 - **MkDocs runs `strict: true`, so every page under `docs/` must appear in `mkdocs.yml`'s nav.**
   Writing ADR-0015 and not adding it there turns `make docs` red. That is deliberate: it is what
   stops a decision being written and then never linked.
+- **A contract test that never leaves its transaction tests answers, not writes.** The repository
+  contract ran entirely inside one session for months and was passing while the SQLAlchemy
+  adapter discarded every collection change. Anything asserting that something was *stored* has
+  to commit and re-read; the `storage` fixture exists for that, and the `backend` fixture is for
+  everything else.
+- **`cz bump` needs `--yes`, and it is the prompt that dies under Git Bash, not `cz`.** With no
+  tag yet it asks "Is this the first tag created?" through `prompt_toolkit`, which raises
+  `NoConsoleScreenBufferError` there. `cz bump --get-next --yes` and `make release-next` are fine
+  in any shell. Releasing is the `release.yaml` workflow, not a local bump: it resolves the
+  version and pushes a tag, and there is no release commit.
 - There is no system Python on this machine. Always `uv run --frozen python`, never `python`.
 - Very large heredocs get truncated by the shell tooling here; write long files with the editor
   tool instead of `cat <<'EOF'`.

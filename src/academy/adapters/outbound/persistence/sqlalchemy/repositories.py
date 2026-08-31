@@ -24,6 +24,7 @@ from abc import ABC, abstractmethod
 
 from sqlalchemy import RowMapping, Table, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from academy.adapters.outbound.persistence.sqlalchemy import tables
 from academy.application.errors import ConflictError, NotFoundError
@@ -57,6 +58,23 @@ class _SqlAlchemyRepository[EntityT, IdT](ABC):
     """
 
     entity_name = 'entity'
+
+    # The mapped attributes that hold one of ADR-0017's serialised collections, named so that
+    # `save` can mark them changed.
+    #
+    # They have to be named, because SQLAlchemy cannot see into them. A JSON column's change
+    # detection is by attribute *assignment*, and the domain never assigns: `history.record(...)`
+    # appends to the list the attribute already holds, so the value the ORM compares against is
+    # the mutated list itself and the comparison finds no difference. The result is a `save` that
+    # returns cleanly, a `commit` that succeeds, and a row that never changed -- silent data
+    # loss, and invisible to any test that reads back through the session that made the change,
+    # because the identity map hands back the very object that was mutated.
+    #
+    # `MutableList` would track this automatically and was rejected: it needs a mutable wrapper
+    # to survive every path the *domain* takes with its own list, and the domain is copied and
+    # not ours to constrain (ADR-0002). Naming four attributes in the layer that knows they are
+    # columns is the smaller commitment.
+    mutable_collections: tuple[str, ...] = ()
 
     def __init__(self, session: AsyncSession) -> None:
         """Bind the repository to the session its scope opened.
@@ -112,7 +130,13 @@ class _SqlAlchemyRepository[EntityT, IdT](ABC):
         if await self.get(identity) is None:
             raise NotFoundError(self.entity_name, identity)
 
-        await self._session.merge(entity)
+        merged = await self._session.merge(entity)
+        # Unconditionally, and before the flush. Unconditionally because there is nothing to
+        # compare against -- the whole problem is that the ORM's "before" value and the caller's
+        # "after" value are the same mutated object -- and because ADR-0017 already says a
+        # collection is written whole, so marking one clean would save nothing a dirty one costs.
+        for name in self.mutable_collections:
+            flag_modified(merged, name)
         await self._session.flush()
 
     async def delete(self, entity_id: IdT) -> None:
@@ -152,6 +176,7 @@ class SqlAlchemyPersonRepository(_SqlAlchemyRepository[Person, PersonId]):
     """People, with their roles and held credentials, ordered by email."""
 
     entity_name = 'person'
+    mutable_collections = ('_roles', '_held_credentials')
 
     def _entity_type(self) -> type[Person]:
         return Person
@@ -241,6 +266,7 @@ class SqlAlchemySectionRepository(_SqlAlchemyRepository[CourseSection, SectionId
     """Course sections and the enrollments inside them, ordered by term then subject."""
 
     entity_name = 'course section'
+    mutable_collections = ('_enrollments',)
 
     def _entity_type(self) -> type[CourseSection]:
         return CourseSection
@@ -292,6 +318,7 @@ class SqlAlchemyAcademicHistoryRepository(_SqlAlchemyRepository[AcademicHistory,
     """Student transcripts, keyed by the student they belong to."""
 
     entity_name = 'academic history'
+    mutable_collections = ('_entries',)
 
     def _entity_type(self) -> type[AcademicHistory]:
         return AcademicHistory

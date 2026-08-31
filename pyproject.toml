@@ -31,6 +31,12 @@ spreadsheet = [
     "openpyxl>=3.1",
 ]
 
+# The CLI adapter has no extra of its own: argparse is in the standard library,
+# which is one of the reasons it was chosen (ADR-0020). `python -m academy` and
+# the console script below therefore work from a bare `uv sync`.
+[project.scripts]
+academy = "academy.adapters.inbound.cli:main"
+
 [build-system]
 requires = ["hatchling", "uv-dynamic-versioning"]
 build-backend = "hatchling.build"

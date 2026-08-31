@@ -69,3 +69,22 @@ jobs:
 
       - name: Run the integration tier against PostgreSQL
         run: uv run --frozen pytest -m integration
+
+  # The e2e tier, which the default job excludes by marker. Its own job because it spawns
+  # interpreters -- `python -m academy` in a real subprocess -- and is therefore slow and
+  # differently fragile from everything else. It is the only tier that can catch an entry point
+  # that does not resolve, or an exit status that never reaches a shell.
+  pytest-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: ./.github/actions/setup-python
+
+      # No ALLOW_EMPTY_TIER equivalent here either: pytest exits 5 when a marker selects
+      # nothing, and now that this tier has tests that is a failure worth reporting.
+      - name: Run the e2e tier
+        run: uv run --frozen pytest -m e2e

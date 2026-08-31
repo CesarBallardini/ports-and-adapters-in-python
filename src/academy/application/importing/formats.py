@@ -31,6 +31,12 @@ CONTENT_TYPES = {
 }
 EXTENSIONS = {'.csv': 'csv', '.xlsx': 'xlsx', '.xlsm': 'xlsx'}
 
+# The extension to *write* for a format, derived from the table above rather than restated, so
+# the two cannot disagree about what `.xlsm` is. Reversed because a later entry wins in a dict
+# comprehension and the first extension listed for a format is its canonical one -- `.xlsx`, not
+# `.xlsm`.
+CANONICAL_EXTENSIONS = {name: extension for extension, name in reversed(EXTENSIONS.items())}
+
 
 class SpreadsheetFormats:
     """The formats this deployment can read and write, and how an upload picks one."""
@@ -81,6 +87,27 @@ class SpreadsheetFormats:
             The reader for the chosen format, or the default reader if nothing identified it.
         """
         return self._readers[self._format_of(content_type, filename)]
+
+    def extension_for(self, content_type: str = '', filename: str = '') -> str:
+        """The canonical extension of the format :meth:`reader_for` would choose for an upload.
+
+        Exists so a *queued* import reads back through the same adapter the inline path would
+        have used. The job carries a storage key and no MIME type, so the key is given this
+        extension when the payload is stored and the worker resolves the format from the key --
+        which means the choice is made once, at submission, rather than guessed again later by a
+        process holding less information.
+
+        A payload nothing identified is stored under the *default* format's extension, so reading
+        it back reaches the same reader that would have rejected it inline rather than a
+        different one that might not.
+
+        Returns:
+            The extension, leading dot included, e.g. ``'.csv'``. Empty if this deployment wired
+            a format under a name no extension maps to -- in which case the key carries no
+            extension and the worker falls back to the default, exactly as an upload with no
+            filename does.
+        """
+        return CANONICAL_EXTENSIONS.get(self._format_of(content_type, filename), '')
 
     def writer_for(self, file_format: str) -> SpreadsheetWriter:
         """Pick the writer for a requested template format.
