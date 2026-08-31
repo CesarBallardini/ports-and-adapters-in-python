@@ -76,17 +76,30 @@ least two adapters — in-memory *and* SQLAlchemy, CSV *and* XLSX, local *and* S
 them are parametrised through a single shared contract test. In-memory adapters are
 production-grade adapters, not test doubles, and they live in `src/`, not in `tests/`.
 
+The corollary is that a port with **no** implementation should not grow one speculatively.
+`ActorIdentity` is the standing example: it resolves an already-authenticated person id, the CLI
+has no authentication step to produce one (ADR-0020), and inventing an adapter for it now would
+mean one implementation and no second caller to keep it honest. It waits for the web adapter,
+which brings a real session and a second caller in the same change.
+
 ### Rule 5 — Quality gate per phase
 
 All of these must be green before a phase is done:
 
 ```bash
-make lint types arch test coverage security docs
+make lint types arch test test-e2e coverage security docs
 ```
 
 That is ruff (lint + format), pyright + pyrefly, **import-linter**, the full test suite, the
-coverage floor in `.coveragerc`, bandit + pip-audit + OSV-Scanner + gitleaks + pip-licenses,
-and a `--strict` MkDocs build.
+e2e tier, the coverage floor in `.coveragerc`, bandit + pip-audit + OSV-Scanner + gitleaks +
+pip-licenses, and a `--strict` MkDocs build.
+
+**`test-e2e` is listed separately because `make test` does not run it.** The marker excludes it
+(`-m 'not e2e'`), so a phase could be called done with a broken entry point unless it is asked
+for by name. CI runs it in its own `pytest-e2e` job for the same reason.
+
+Raise the coverage floor as each phase closes, keeping a little slack — a floor set at exactly
+today's number fails the moment a new adapter lands ahead of its contract tests.
 
 `make precommit` runs every hook at once and is what CI runs, so a green local run and a green
 CI run cannot drift. Two of the security tools are Go binaries that uv cannot install —
@@ -209,6 +222,12 @@ One exists so far — the CLI — and it sets the shape the others follow.
 - **MkDocs runs `strict: true`, so every page under `docs/` must appear in `mkdocs.yml`'s nav.**
   Writing ADR-0015 and not adding it there turns `make docs` red. That is deliberate: it is what
   stops a decision being written and then never linked.
+- **The e2e tier shares one database across the module, so only a read or a dry run is safe
+  there.** `tests/e2e/` migrates and seeds once (`scope='module'`) because spawning an
+  interpreter per test is already the expensive part. A test that *writes* would leak into every
+  test after it, in an order pytest is free to change. `import run --dry-run` is safe by
+  construction — the import happens in full and is rolled back — and that is why the two import
+  e2e tests are dry runs. A writing e2e test needs its own database, not a new row in this one.
 - **A contract test that never leaves its transaction tests answers, not writes.** The repository
   contract ran entirely inside one session for months and was passing while the SQLAlchemy
   adapter discarded every collection change. Anything asserting that something was *stored* has
@@ -238,9 +257,14 @@ then hand over the exact commands to run.
 
 Commit messages follow **[Conventional Commits](https://www.conventionalcommits.org/)** —
 `feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`, `ci:`. A `commit-msg` hook checks
-this locally and `cz check` checks the PR title in CI, because a squash merge takes the title
-as the subject and `cz bump` reads that history to pick the next version. So any commit
-command handed over must have a Conventional Commits subject.
+this locally and `cz check` checks the PR title in CI, and `cz bump` reads that history to pick
+the next version. So any commit command handed over must have a Conventional Commits subject.
+
+**How a PR is merged changes which subject matters.** Under a *squash* merge the PR title
+becomes the permanent commit subject, so it is the only one `cz bump` will ever read. Under a
+*merge commit* — which is how PR #10 landed — every commit keeps its own subject and the merge
+commit adds one more. Either way `validate-pr-title` still runs on the PR, so the title must be
+conventional; what changes is whether a mislabelled commit inside the branch is survivable.
 
 The version lives **only in the git tag** (`uv-dynamic-versioning`); there is nothing to bump
 in a tracked file. Commits to the default branch are blocked by a hook: work goes on a branch.
@@ -249,8 +273,9 @@ Branches are named `<type>/<slug>`, where `<type>` is the Conventional Commits t
 — `feat/quality-gates`, `fix/gitleaks-scan-scope`. A `pre-push` hook enforces it. So a handover
 that starts a new line of work leads with `git checkout -b <type>/<slug>`.
 
-**The pull request title has to be set by hand.** When a branch carries more than one commit,
-GitHub defaults the title to the humanised branch name (`ci/sync-upstream-quality-gates` →
+**The pull request title has to be set by hand — when the branch has more than one commit.**
+GitHub then defaults it to the humanised branch name (`ci/sync-upstream-quality-gates` →
 `Ci/sync upstream quality gates`), which drops the colon and fails `validate-pr-title`. The
-`pre-push` hook warns and suggests a starting point. That title is what a squash merge records
-and what `cz bump` reads, so it is the one that matters.
+`pre-push` hook warns and suggests a starting point; ignore the suggestion, which is derived
+from the slug and says less than the branch does. A **single-commit** branch is the exception:
+GitHub uses that commit's subject, which the `commit-msg` hook has already validated.
