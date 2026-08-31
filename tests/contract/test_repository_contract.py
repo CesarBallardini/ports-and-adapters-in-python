@@ -19,9 +19,12 @@ would make the suite reject a legitimate adapter -- which is the failure mode th
 contract suite into a description of whichever implementation was written first.
 """
 
-from collections.abc import Callable
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
+from pathlib import Path
 from uuid import UUID
 
 import pytest
@@ -31,15 +34,32 @@ from academy.adapters.outbound.persistence.memory import (
     MemoryAcademicHistoryRepository,
     MemoryConfigurationRepository,
     MemoryGuardianshipRepository,
+    MemoryImportJobRepository,
     MemoryPersonRepository,
     MemorySectionRepository,
     MemoryStore,
 )
+from academy.adapters.outbound.persistence.sqlalchemy.repositories import (
+    SqlAlchemyAcademicHistoryRepository,
+    SqlAlchemyConfigurationRepository,
+    SqlAlchemyGuardianshipRepository,
+    SqlAlchemyImportJobRepository,
+    SqlAlchemyPersonRepository,
+    SqlAlchemySectionRepository,
+)
+from academy.adapters.outbound.persistence.sqlalchemy.session import (
+    create_engine,
+    create_session_factory,
+    migrate_to_head,
+)
+from academy.application.dtos import ImportResultDto, RowError
 from academy.application.errors import ConflictError, NotFoundError
+from academy.application.jobs import ImportJob, ImportKind, JobId, JobStatus
 from academy.application.ports.outbound.repositories import (
     AcademicHistoryRepository,
     ConfigurationRepository,
     GuardianshipRepository,
+    ImportJobRepository,
     PersonRepository,
     SectionRepository,
 )
@@ -87,29 +107,58 @@ class Backend:
     histories: AcademicHistoryRepository
     guardianships: GuardianshipRepository
     configuration: ConfigurationRepository
+    jobs: ImportJobRepository
 
 
-def _memory() -> Backend:
+@asynccontextmanager
+async def _memory(_tmp_path: Path) -> AsyncIterator[Backend]:
     """The in-memory backend, sharing one store across its repositories."""
     store = MemoryStore()
-    return Backend(
+    yield Backend(
         people=MemoryPersonRepository(store),
         sections=MemorySectionRepository(store),
         histories=MemoryAcademicHistoryRepository(store),
         guardianships=MemoryGuardianshipRepository(store),
         configuration=MemoryConfigurationRepository(store),
+        jobs=MemoryImportJobRepository(store),
     )
 
 
-# Add the SQLAlchemy backend here when it lands; every test below then runs against it too.
-BACKENDS = [pytest.param(_memory, id='memory')]
+@asynccontextmanager
+async def _sqlalchemy(tmp_path: Path) -> AsyncIterator[Backend]:
+    """The SQLAlchemy backend, on a SQLite database built by migrations.
+
+    Migrated, never ``create_all`` (ADR-0006): the schema under test is the schema a deployment
+    gets. The migration runs in a worker thread because Alembic drives its own event loop, and
+    ``asyncio.run`` inside a running one is an error.
+    """
+    url = f'sqlite+aiosqlite:///{(tmp_path / "academy.db").as_posix()}'
+    await asyncio.to_thread(migrate_to_head, url)
+
+    engine = create_engine(url)
+    try:
+        async with create_session_factory(engine)() as session:
+            yield Backend(
+                people=SqlAlchemyPersonRepository(session),
+                sections=SqlAlchemySectionRepository(session),
+                histories=SqlAlchemyAcademicHistoryRepository(session),
+                guardianships=SqlAlchemyGuardianshipRepository(session),
+                configuration=SqlAlchemyConfigurationRepository(session),
+                jobs=SqlAlchemyImportJobRepository(session),
+            )
+    finally:
+        # Windows will not delete the temporary directory while a handle is open on the file.
+        await engine.dispose()
+
+
+BACKENDS = [pytest.param(_memory, id='memory'), pytest.param(_sqlalchemy, id='sqlalchemy')]
 
 
 @pytest.fixture(params=BACKENDS)
-def backend(request: pytest.FixtureRequest) -> Backend:
+async def backend(request: pytest.FixtureRequest, tmp_path: Path) -> AsyncIterator[Backend]:
     """A fresh backend, one per test, per implementation."""
-    build: Callable[[], Backend] = request.param
-    return build()
+    async with request.param(tmp_path) as bundle:
+        yield bundle
 
 
 def _person(person_id: PersonId, handle: str, *roles: Role) -> Person:
@@ -390,3 +439,111 @@ async def test_the_age_of_majority_can_be_changed(backend: Backend) -> None:
     await backend.configuration.set_age_of_majority(AgeOfMajority(21))
 
     assert await backend.configuration.age_of_majority() == AgeOfMajority(21)
+
+
+# --------------------------------------------------------------------------------------
+# ImportJobRepository
+# --------------------------------------------------------------------------------------
+
+
+def _job(
+    number: int, *, minutes: int, submitted_by: PersonId = ANN, status: JobStatus = JobStatus.PENDING
+) -> ImportJob:
+    return ImportJob(
+        id=JobId(UUID(int=number)),
+        kind=ImportKind.GRADE_SHEET,
+        storage_key=f'imports/{number}',
+        submitted_by=str(submitted_by),
+        submitted_at=datetime(2026, 8, 31, 9, minutes, tzinfo=UTC),
+        status=status,
+        context={'section_id': str(TEACHING)},
+    )
+
+
+@pytest.mark.unit
+async def test_a_job_round_trips_with_everything_on_it(backend: Backend) -> None:
+    # Including the context, which crosses a queue: a worker in another process rebuilds the
+    # import from this row alone.
+    await backend.jobs.add(_job(1, minutes=0))
+
+    stored = await backend.jobs.get(JobId(UUID(int=1)))
+
+    assert stored is not None
+    assert stored.kind is ImportKind.GRADE_SHEET
+    assert stored.storage_key == 'imports/1'
+    assert stored.context == {'section_id': str(TEACHING)}
+    assert stored.status is JobStatus.PENDING
+
+
+@pytest.mark.unit
+async def test_a_finished_job_keeps_its_report(backend: Backend) -> None:
+    job = _job(1, minutes=0)
+    await backend.jobs.add(job)
+    job.mark_running()
+    job.mark_done(ImportResultDto(created=2, errors=(RowError(line=3, reason='no such student'),)))
+    await backend.jobs.save(job)
+
+    stored = await backend.jobs.get(job.id)
+
+    assert stored is not None
+    assert stored.status is JobStatus.DONE
+    assert stored.result is not None
+    assert stored.result.created == 2
+    assert [error.line for error in stored.result.errors] == [3]
+
+
+@pytest.mark.unit
+async def test_claiming_takes_the_oldest_pending_job_and_marks_it_running(backend: Backend) -> None:
+    await backend.jobs.add(_job(2, minutes=30))
+    await backend.jobs.add(_job(1, minutes=0))
+
+    claimed = await backend.jobs.claim_next_pending()
+
+    assert claimed is not None
+    assert claimed.id == JobId(UUID(int=1)), 'the oldest, not the first inserted'
+    assert claimed.status is JobStatus.RUNNING
+
+    stored = await backend.jobs.get(claimed.id)
+    assert stored is not None
+    assert stored.status is JobStatus.RUNNING, 'claiming and marking are one step, not two'
+
+
+@pytest.mark.unit
+async def test_the_same_job_cannot_be_claimed_twice(backend: Backend) -> None:
+    # What stops two workers polling one queue from running an import twice. For an idempotent
+    # importer that is waste; for any other kind it is data corruption.
+    await backend.jobs.add(_job(1, minutes=0))
+
+    first = await backend.jobs.claim_next_pending()
+    second = await backend.jobs.claim_next_pending()
+
+    assert first is not None
+    assert second is None
+
+
+@pytest.mark.unit
+async def test_claiming_nothing_is_not_an_error(backend: Backend) -> None:
+    assert await backend.jobs.claim_next_pending() is None
+
+
+@pytest.mark.unit
+async def test_jobs_can_be_listed_by_status_oldest_first(backend: Backend) -> None:
+    await backend.jobs.add(_job(2, minutes=30))
+    await backend.jobs.add(_job(1, minutes=0))
+    await backend.jobs.add(_job(3, minutes=45, status=JobStatus.DONE))
+
+    pending = await backend.jobs.with_status(JobStatus.PENDING)
+
+    assert [job.id for job in pending] == [JobId(UUID(int=1)), JobId(UUID(int=2))]
+
+
+@pytest.mark.unit
+async def test_a_persons_jobs_come_back_newest_first(backend: Backend) -> None:
+    # Backs the "my imports" screen, where the one you just submitted is the one you want.
+    await backend.jobs.add(_job(1, minutes=0))
+    await backend.jobs.add(_job(2, minutes=30))
+    await backend.jobs.add(_job(3, minutes=45, submitted_by=BEA))
+
+    theirs = await backend.jobs.submitted_by(ANN)
+
+    assert [job.id for job in theirs] == [JobId(UUID(int=2)), JobId(UUID(int=1))]
