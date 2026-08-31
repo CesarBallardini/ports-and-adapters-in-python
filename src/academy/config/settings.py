@@ -44,14 +44,18 @@ type Environ = Mapping[str, str]
 # The variables a deployment sets. The prefix is `ACADEMY_` for every one of them, so
 # `env | grep ACADEMY_` shows the whole of a deployment's configuration.
 #
-# `ACADEMY_DATABASE_URL` is deliberately absent: nothing in the composition root can act on it
-# until the SQLAlchemy adapter exists (Phase B), and a setting nobody reads is a setting that
-# can be wrong without anything noticing. The integration suite reads that variable directly
-# for now (ADR-0007); it moves in here when there is an engine to hand it to.
+# Two database URLs, not one, and the split is a security boundary rather than a convenience
+# (ADR-0018): the application connects with a role that can read and write rows and cannot
+# touch the schema, while migrations connect with one that owns it.
 #
 # Comments rather than attribute docstrings: the check-docstring-first hook reads a string
 # literal after a module-level assignment as a second module docstring.
 ENV_PERSISTENCE: Final = 'ACADEMY_PERSISTENCE'
+ENV_DATABASE_URL: Final = 'ACADEMY_DATABASE_URL'
+ENV_MIGRATION_DATABASE_URL: Final = 'ACADEMY_MIGRATION_DATABASE_URL'
+ENV_UPLOAD_DIRECTORY: Final = 'ACADEMY_UPLOAD_DIRECTORY'
+ENV_IMPORT_INLINE_THRESHOLD: Final = 'ACADEMY_IMPORT_INLINE_THRESHOLD_BYTES'
+ENV_IMPORT_MAX_BYTES: Final = 'ACADEMY_IMPORT_MAX_BYTES'
 
 
 def _read(source: Environ, name: str) -> str | None:
@@ -93,6 +97,32 @@ class ConfigurationError(Exception):
     """
 
 
+def _size(value: str | None, name: str, default: int) -> int:
+    """Read a byte count, or say which variable was not a number.
+
+    A size is the one kind of setting a deployment is likely to get wrong in a way that only
+    shows up much later -- ``ACADEMY_IMPORT_MAX_BYTES=16MB`` is a perfectly reasonable thing to
+    type and not a number. Refusing it at startup with the variable's name is the whole
+    difference between a five-second fix and a puzzling failure on the first large upload.
+
+    Raises:
+        ConfigurationError: If the value is not a positive whole number of bytes. Zero is
+            refused too: a threshold of zero queues everything and a cap of zero accepts
+            nothing, and neither is plausibly what someone meant.
+    """
+    if value is None:
+        return default
+
+    try:
+        size = int(value)
+    except ValueError as error:
+        raise ConfigurationError(f'{name}={value!r} is not a whole number of bytes') from error
+
+    if size <= 0:
+        raise ConfigurationError(f'{name}={value!r} must be greater than zero')
+    return size
+
+
 class PersistenceBackend(StrEnum):
     """Which family of persistence adapters the composition root should wire.
 
@@ -126,6 +156,26 @@ class Defaults:
     # the sane default the moment the SQLAlchemy adapter lands and durability is expected.
     PERSISTENCE: Final = PersistenceBackend.MEMORY
 
+    # Where an import stops running inline and gets queued instead (ADR-0009). 256 KiB is
+    # roughly a few thousand grade rows: large enough that a teacher's sheet comes back in the
+    # same response, small enough that a registrar's cohort file does not hold a request open.
+    IMPORT_INLINE_THRESHOLD_BYTES: Final = 256 * 1024
+
+    # The hard cap, above which nothing is accepted at all. It exists because the spreadsheet
+    # ports take `bytes`: the whole file is in memory while it is parsed, so this number is a
+    # promise about this process's footprint, not a policy about file sizes.
+    IMPORT_MAX_BYTES: Final = 16 * 1024 * 1024
+
+    # A file beside the project, so a developer with no environment at all gets a database
+    # that survives a restart. Not `:memory:`: a migration against it would build a schema
+    # and discard it in the same breath.
+    DATABASE_URL: Final = 'sqlite+aiosqlite:///./academy_development.db'
+
+    # Where a queued import's payload is written when storage is durable. Beside the database
+    # rather than in a temporary directory: a payload that vanished on reboot would leave a
+    # pending job pointing at nothing, which is a failure the worker reports and nobody can fix.
+    UPLOAD_DIRECTORY: Final = './academy_uploads'
+
 
 @dataclass(frozen=True, slots=True)
 class _Values:
@@ -141,6 +191,13 @@ class _Values:
     """
 
     persistence: PersistenceBackend = Defaults.PERSISTENCE
+    import_inline_threshold_bytes: int = Defaults.IMPORT_INLINE_THRESHOLD_BYTES
+    import_max_bytes: int = Defaults.IMPORT_MAX_BYTES
+    database_url: str = Defaults.DATABASE_URL
+    upload_directory: str = Defaults.UPLOAD_DIRECTORY
+    # None means "the same database, with whatever privileges that URL carries" -- which is
+    # what a developer on SQLite has, since SQLite has no roles to separate (ADR-0018).
+    migration_database_url: str | None = None
 
 
 class Settings:
@@ -159,14 +216,36 @@ class Settings:
     construction and cannot drift apart.
     """
 
-    def __init__(self, persistence: PersistenceBackend = Defaults.PERSISTENCE) -> None:
+    def __init__(
+        self,
+        persistence: PersistenceBackend = Defaults.PERSISTENCE,
+        import_inline_threshold_bytes: int = Defaults.IMPORT_INLINE_THRESHOLD_BYTES,
+        import_max_bytes: int = Defaults.IMPORT_MAX_BYTES,
+        database_url: str = Defaults.DATABASE_URL,
+        migration_database_url: str | None = None,
+        upload_directory: str = Defaults.UPLOAD_DIRECTORY,
+    ) -> None:
         """Build the configuration a deployment is to run with.
 
         Args:
-            persistence: Which family of persistence adapters to wire. Defaults to
-                :attr:`Defaults.PERSISTENCE`.
+            persistence: Which family of persistence adapters to wire.
+            import_inline_threshold_bytes: At or above this size an import is queued.
+            import_max_bytes: The hard cap on an uploaded payload.
+            database_url: How the *application* connects: rows, never schema.
+            migration_database_url: How *migrations* connect. ``None`` falls back to
+                ``database_url``, which is what a SQLite developer has and what a PostgreSQL
+                deployment must not leave unset.
+            upload_directory: Where a queued import's payload is written when storage is
+                durable. Ignored by the in-memory backend, which keeps payloads in the process.
         """
-        self._values = _Values(persistence=persistence)
+        self._values = _Values(
+            persistence=persistence,
+            import_inline_threshold_bytes=import_inline_threshold_bytes,
+            import_max_bytes=import_max_bytes,
+            database_url=database_url,
+            migration_database_url=migration_database_url,
+            upload_directory=upload_directory,
+        )
 
     @classmethod
     def from_env(cls, environ: Environ | None = None) -> Self:
@@ -184,7 +263,56 @@ class Settings:
             ConfigurationError: If ``ACADEMY_PERSISTENCE`` names a backend that does not exist.
         """
         source = os.environ if environ is None else environ
-        return cls(persistence=cls._backend(_read(source, ENV_PERSISTENCE)))
+        return cls(
+            persistence=cls._backend(_read(source, ENV_PERSISTENCE)),
+            import_inline_threshold_bytes=_size(
+                _read(source, ENV_IMPORT_INLINE_THRESHOLD),
+                ENV_IMPORT_INLINE_THRESHOLD,
+                Defaults.IMPORT_INLINE_THRESHOLD_BYTES,
+            ),
+            import_max_bytes=_size(
+                _read(source, ENV_IMPORT_MAX_BYTES), ENV_IMPORT_MAX_BYTES, Defaults.IMPORT_MAX_BYTES
+            ),
+            database_url=_read(source, ENV_DATABASE_URL) or Defaults.DATABASE_URL,
+            migration_database_url=_read(source, ENV_MIGRATION_DATABASE_URL),
+            upload_directory=_read(source, ENV_UPLOAD_DIRECTORY) or Defaults.UPLOAD_DIRECTORY,
+        )
+
+    @property
+    def database_url(self) -> str:
+        """How the application connects to its database.
+
+        The role behind this URL should be able to read and write rows and nothing else
+        (ADR-0018). Nothing in the application ever runs DDL, so a role that could is a role
+        whose extra privileges only a mistake would ever use.
+        """
+        return self._values.database_url
+
+    @property
+    def migration_database_url(self) -> str:
+        """How migrations connect.
+
+        Falls back to :attr:`database_url` when unset, because SQLite has no roles to separate
+        and a developer should not have to configure two URLs to get a working database. On
+        PostgreSQL, leaving it unset means migrations run as the application role -- which
+        works, and gives up the separation the split exists for.
+        """
+        return self._values.migration_database_url or self._values.database_url
+
+    @property
+    def upload_directory(self) -> str:
+        """Where a queued import's payload is written, when storage is durable."""
+        return self._values.upload_directory
+
+    @property
+    def import_inline_threshold_bytes(self) -> int:
+        """At or above this many bytes, an import is queued rather than run inline."""
+        return self._values.import_inline_threshold_bytes
+
+    @property
+    def import_max_bytes(self) -> int:
+        """The largest payload this process will accept at all."""
+        return self._values.import_max_bytes
 
     @property
     def persistence(self) -> PersistenceBackend:

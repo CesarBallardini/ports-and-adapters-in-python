@@ -88,4 +88,6 @@ nav:
       - ADR-0014 In-memory adapters and contract tests: decisions/0014-in-memory-adapters-and-contract-tests.md
       - ADR-0015 Manual composition root over a DI container: decisions/0015-manual-composition-root-over-a-di-container.md
       - ADR-0016 Who may read a section grade sheet: decisions/0016-who-may-read-a-section-grade-sheet.md
+      - ADR-0017 Value-object collections as serialised columns: decisions/0017-value-object-collections-as-serialised-columns.md
+      - ADR-0018 Two database roles: decisions/0018-two-database-roles.md
   - API reference: reference.md

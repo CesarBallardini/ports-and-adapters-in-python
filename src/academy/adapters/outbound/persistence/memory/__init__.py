@@ -9,6 +9,7 @@ from academy.adapters.outbound.persistence.memory.repositories import (
     MemoryAcademicHistoryRepository,
     MemoryConfigurationRepository,
     MemoryGuardianshipRepository,
+    MemoryImportJobRepository,
     MemoryPersonRepository,
     MemorySectionRepository,
 )
@@ -23,6 +24,7 @@ __all__ = [
     'MemoryAcademicHistoryRepository',
     'MemoryConfigurationRepository',
     'MemoryGuardianshipRepository',
+    'MemoryImportJobRepository',
     'MemoryPersonRepository',
     'MemorySectionRepository',
     'MemoryStore',

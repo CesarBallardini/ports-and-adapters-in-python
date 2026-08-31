@@ -16,13 +16,49 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import NewType
+from typing import Self
+from uuid import UUID
 
 from academy.application.dtos import ImportResultDto
 from academy.application.errors import ApplicationError
 
-#: Identity of an import job. Opaque to everything except the repository that stores it.
-JobId = NewType('JobId', str)
+
+@dataclass(frozen=True, slots=True)
+class JobId:
+    """Identity of an import job.
+
+    A real class rather than a ``NewType`` over ``UUID``, for the reason every identifier in
+    this system is one: a ``NewType`` exists only for the type checker, so at run time a job id
+    and a person id are the same object and can be swapped in any untyped path -- a JSON body,
+    a dictionary key, a spreadsheet cell. The domain's ids are distinct classes and cannot be;
+    this one now matches them.
+
+    Declared here rather than in :mod:`academy.domain.shared.ids` because a job is not a domain
+    thing (see this module's docstring). It duplicates that module's *shape* deliberately: the
+    alternative is importing a private base across a layer boundary to save six lines.
+    """
+
+    value: UUID
+
+    @classmethod
+    def from_str(cls, raw: str) -> Self:
+        """Build the identifier from the canonical string form of a UUID.
+
+        Raises:
+            ValueError: If ``raw`` is not a UUID. Callers turn that into ``NotFoundError``: a
+                malformed id names nothing, which is what that error says.
+        """
+        return cls(UUID(raw))
+
+    def __str__(self) -> str:
+        """Return the canonical string form of the underlying UUID."""
+        return str(self.value)
+
+
+# The extra parameters an importer needs beyond the file itself -- the section a grade sheet is
+# for, say. Strings to strings because it crosses a queue: a job outlives the process that
+# created it, so everything in here has to survive being written down and read back.
+type ImportContext = dict[str, str]
 
 
 class ImportKind(Enum):
@@ -88,7 +124,7 @@ class ImportJob:
     status: JobStatus = JobStatus.PENDING
     result: ImportResultDto | None = None
     failure_reason: str | None = None
-    context: dict[str, str] = field(default_factory=dict)
+    context: ImportContext = field(default_factory=dict)
 
     def mark_running(self) -> None:
         """Move the job from pending to running.

@@ -20,35 +20,65 @@ any of them knowing which database is underneath.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
+from functools import partial
+from pathlib import Path
 from typing import Self
+
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from academy.adapters.outbound.persistence.memory import (
     MemoryAcademicHistoryRepository,
     MemoryConfigurationRepository,
     MemoryGuardianshipRepository,
+    MemoryImportJobRepository,
     MemoryPersonRepository,
     MemorySectionRepository,
     MemoryStore,
     MemoryUnitOfWork,
 )
+from academy.adapters.outbound.persistence.sqlalchemy.repositories import (
+    SqlAlchemyAcademicHistoryRepository,
+    SqlAlchemyConfigurationRepository,
+    SqlAlchemyGuardianshipRepository,
+    SqlAlchemyImportJobRepository,
+    SqlAlchemyPersonRepository,
+    SqlAlchemySectionRepository,
+)
+from academy.adapters.outbound.persistence.sqlalchemy.session import create_engine, create_session_factory
+from academy.adapters.outbound.persistence.sqlalchemy.unit_of_work import SqlAlchemyUnitOfWork
+from academy.adapters.outbound.queue import InlineJobQueue
+from academy.adapters.outbound.spreadsheet import (
+    CsvSpreadsheetReader,
+    CsvSpreadsheetWriter,
+    XlsxSpreadsheetReader,
+    XlsxSpreadsheetWriter,
+)
+from academy.adapters.outbound.storage import LocalFileStorage, MemoryFileStorage
 from academy.adapters.outbound.system import SystemClock
+from academy.adapters.outbound.system.ids import Uuid4IdGenerator
 from academy.application.authorization import AccessGuard, RelationshipResolver
+from academy.application.commands import RunImportJobCommand
 from academy.application.grading import GradeManagement
+from academy.application.importing import GradeSheetImporter, ImportService, SpreadsheetFormats
+from academy.application.jobs import ImportJob, ImportKind, JobId
 from academy.application.ports.inbound.grading import ManageGrades
+from academy.application.ports.inbound.imports import ImportData
 from academy.application.ports.inbound.records import ViewStudentRecords
+from academy.application.ports.outbound.file_storage import FileStorage
 from academy.application.ports.outbound.repositories import (
     AcademicHistoryRepository,
     ConfigurationRepository,
     GuardianshipRepository,
+    ImportJobRepository,
     PersonRepository,
     SectionRepository,
 )
-from academy.application.ports.outbound.system import Clock
+from academy.application.ports.outbound.system import Clock, IdGenerator
 from academy.application.ports.outbound.unit_of_work import UnitOfWork
 from academy.application.records import StudentRecords
-from academy.config.settings import ENV_PERSISTENCE, ConfigurationError, Environ, PersistenceBackend, Settings
+from academy.config.settings import Environ, PersistenceBackend, Settings
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +106,13 @@ class Scope:
     histories: AcademicHistoryRepository
     guardianships: GuardianshipRepository
     configuration: ConfigurationRepository
+    jobs: ImportJobRepository
     clock: Clock
+    ids: IdGenerator
+    storage: FileStorage
+    formats: SpreadsheetFormats
+    import_inline_threshold_bytes: int
+    import_max_bytes: int
 
     def grade_management(self) -> ManageGrades:
         """Build the grading use cases (UC-21, UC-22).
@@ -117,6 +153,52 @@ class Scope:
             guard=self.access_guard(),
         )
 
+    def import_data(self) -> ImportData:
+        """Build the bulk-import use cases (UC-36, UC-40 to UC-42).
+
+        The queue is wired **inline**: this deployment has no worker process, so ``enqueue``
+        runs the job in the caller. The seam is real all the same -- swapping in a queue that
+        defers to a worker changes this method and nothing else, because the worker's entry
+        point is the same ``run_job`` the inline queue calls.
+
+        Returns:
+            The inbound port, satisfied by
+            :class:`~academy.application.importing.service.ImportService`.
+        """
+        # The knot every inline queue has to tie: the queue runs the service, and the service
+        # holds the queue. It is tied here, with a local, so that neither of them knows the
+        # other exists -- which is precisely the composition root's job. A deployment with a
+        # real worker passes a queue that defers instead, and this is the only line that
+        # changes.
+        built: list[ImportService] = []
+
+        async def run(job_id: JobId) -> ImportJob:
+            return await built[0].run_job(RunImportJobCommand(job_id=str(job_id)))
+
+        service = ImportService(
+            importers={
+                ImportKind.GRADE_SHEET: GradeSheetImporter(
+                    sections=self.sections,
+                    histories=self.histories,
+                    people=self.people,
+                    guard=self.access_guard(),
+                )
+            },
+            formats=self.formats,
+            unit_of_work=self.unit_of_work,
+            jobs=self.jobs,
+            people=self.people,
+            storage=self.storage,
+            queue=InlineJobQueue(run),
+            clock=self.clock,
+            ids=self.ids,
+            guard=self.access_guard(),
+            inline_threshold_bytes=self.import_inline_threshold_bytes,
+            max_bytes=self.import_max_bytes,
+        )
+        built.append(service)
+        return service
+
     def access_guard(self) -> AccessGuard:
         """Build the guard that resolves relations and enforces what they grant.
 
@@ -156,15 +238,33 @@ class Container:
             ConfigurationError: If the chosen persistence backend has no adapter yet. Raised
                 here, at startup, rather than on the first request that needs a repository.
         """
-        if settings.persistence is not PersistenceBackend.MEMORY:
-            raise ConfigurationError(
-                f'the {settings.persistence.value} persistence adapter is not written yet; '
-                f'set {ENV_PERSISTENCE}=memory'
-            )
-
         self._settings = settings
         self._clock: Clock = clock or SystemClock()
-        self._store = MemoryStore()
+        self._ids: IdGenerator = Uuid4IdGenerator()
+        self._formats = SpreadsheetFormats(
+            readers={'csv': CsvSpreadsheetReader(), 'xlsx': XlsxSpreadsheetReader()},
+            writers={'csv': CsvSpreadsheetWriter(), 'xlsx': XlsxSpreadsheetWriter()},
+        )
+
+        # The one branch in the whole application that knows which database exists, and the
+        # payload storage follows it: a durable database with in-memory payloads would leave a
+        # pending job pointing at bytes that vanished on restart.
+        #
+        # Nothing here migrates. The application connects as a role that cannot (ADR-0018), so
+        # a database that has not been migrated fails at the first query rather than being
+        # quietly repaired -- which is what makes migration a deploy step instead of a race
+        # between two starting instances.
+        self._engine: AsyncEngine | None = None
+
+        if settings.persistence is PersistenceBackend.MEMORY:
+            store = MemoryStore()
+            self._storage: FileStorage = MemoryFileStorage()
+            self._open_scope: Callable[[], AbstractAsyncContextManager[Scope]] = partial(self._memory_scope, store)
+        else:
+            self._engine = create_engine(settings.database_url)
+            sessions = create_session_factory(self._engine)
+            self._storage = LocalFileStorage(Path(settings.upload_directory))
+            self._open_scope = partial(self._session_scope, sessions)
 
     @classmethod
     def from_env(cls, environ: Environ | None = None, clock: Clock | None = None) -> Self:
@@ -197,21 +297,88 @@ class Container:
         one of these per job and per invocation, so all four drivers assemble the same graph
         through the same method.
 
-        With the in-memory backend the tables *outlive* the scope -- the process is the
-        database -- and only the transaction is scoped, which is why the unit of work is built
-        here and the store is not. When the SQLAlchemy adapter lands this is where a session
-        opens and closes, and nothing outside this method has to change.
+        Which backend answers was decided once, at startup: this method opens whatever
+        ``__init__`` chose and knows nothing about the choice. Branching here instead would
+        mean asking the same settled question on every request, and would leave the two
+        alternatives as fields that must both be checked and only one of which is ever set.
 
         Yields:
             A scope bound to a fresh unit of work.
         """
-        store = self._store
-        yield Scope(
+        async with self._open_scope() as scope:
+            yield scope
+
+    @asynccontextmanager
+    async def _memory_scope(self, store: MemoryStore) -> AsyncIterator[Scope]:
+        """A scope over the in-memory store.
+
+        The tables *outlive* the scope -- the process is the database -- so only the
+        transaction is scoped, which is why the unit of work is a factory here and the store
+        is not.
+        """
+        yield self._scope(
             unit_of_work=lambda: MemoryUnitOfWork(store),
             people=MemoryPersonRepository(store),
             sections=MemorySectionRepository(store),
             histories=MemoryAcademicHistoryRepository(store),
             guardianships=MemoryGuardianshipRepository(store),
             configuration=MemoryConfigurationRepository(store),
-            clock=self._clock,
+            jobs=MemoryImportJobRepository(store),
         )
+
+    @asynccontextmanager
+    async def _session_scope(self, sessions: async_sessionmaker[AsyncSession]) -> AsyncIterator[Scope]:
+        """A scope over one database session, opened and closed with the scope."""
+        async with sessions() as session:
+            yield self._scope(
+                unit_of_work=lambda: SqlAlchemyUnitOfWork(session),
+                people=SqlAlchemyPersonRepository(session),
+                sections=SqlAlchemySectionRepository(session),
+                histories=SqlAlchemyAcademicHistoryRepository(session),
+                guardianships=SqlAlchemyGuardianshipRepository(session),
+                configuration=SqlAlchemyConfigurationRepository(session),
+                jobs=SqlAlchemyImportJobRepository(session),
+            )
+
+    def _scope(
+        self,
+        *,
+        unit_of_work: Callable[[], UnitOfWork],
+        people: PersonRepository,
+        sections: SectionRepository,
+        histories: AcademicHistoryRepository,
+        guardianships: GuardianshipRepository,
+        configuration: ConfigurationRepository,
+        jobs: ImportJobRepository,
+    ) -> Scope:
+        """Assemble a scope from one backend's repositories and the process-lifetime rest.
+
+        Exists so the two branches above differ *only* in which adapters they name. Anything
+        common that drifted between them -- a clock in one and not the other -- would be a
+        difference between backends that no port describes.
+        """
+        return Scope(
+            unit_of_work=unit_of_work,
+            people=people,
+            sections=sections,
+            histories=histories,
+            guardianships=guardianships,
+            configuration=configuration,
+            jobs=jobs,
+            clock=self._clock,
+            ids=self._ids,
+            storage=self._storage,
+            formats=self._formats,
+            import_inline_threshold_bytes=self._settings.import_inline_threshold_bytes,
+            import_max_bytes=self._settings.import_max_bytes,
+        )
+
+    async def aclose(self) -> None:
+        """Release what the process holds.
+
+        Only the engine holds anything: an open pool, and on SQLite a file handle that Windows
+        will not let a temporary directory delete. A memory container has nothing to close and
+        this is a no-op for it.
+        """
+        if self._engine is not None:
+            await self._engine.dispose()

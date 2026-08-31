@@ -55,6 +55,7 @@ from copy import deepcopy
 from types import TracebackType
 from typing import Final
 
+from academy.application.jobs import ImportJob, JobId
 from academy.domain.academics.course_section import CourseSection
 from academy.domain.grades.academic_history import AcademicHistory
 from academy.domain.guardianship.guardianship import Guardianship
@@ -245,6 +246,7 @@ class MemoryStore:
         self.sections: Table[SectionId, CourseSection] = Table(self)
         self.histories: Table[PersonId, AcademicHistory] = Table(self)
         self.guardianships: Table[GuardianshipId, Guardianship] = Table(self)
+        self.jobs: Table[JobId, ImportJob] = Table(self)
         self._age_of_majority = DEFAULT_AGE_OF_MAJORITY
 
     @property

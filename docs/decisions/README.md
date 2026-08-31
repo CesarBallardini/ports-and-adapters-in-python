@@ -22,3 +22,5 @@ references it, never edited in place.
 | [0014](./0014-in-memory-adapters-and-contract-tests.md) | In-memory adapters are first-class, verified by contract tests | Accepted |
 | [0015](./0015-manual-composition-root-over-a-di-container.md) | Manual composition root over a DI container | Accepted |
 | [0016](./0016-who-may-read-a-section-grade-sheet.md) | A grade sheet is readable only by someone who may read every person on it | Accepted |
+| [0017](./0017-value-object-collections-as-serialised-columns.md) | Value-object collections are stored as serialised columns | Accepted |
+| [0018](./0018-two-database-roles.md) | Two database roles: migrations own the schema, the application owns the data | Accepted |
