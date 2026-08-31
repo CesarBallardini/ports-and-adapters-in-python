@@ -14,6 +14,14 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+# One parsed row: a header cell's name to that cell's value, both always strings. Named because
+# it is the vocabulary the importers above the port are written in, and because `list[dict[str,
+# str]]` says nothing about which string is which.
+#
+# Comments rather than attribute docstrings: the check-docstring-first hook reads a string
+# literal after a module-level assignment as a second module docstring.
+type Row = dict[str, str]
+
 
 @runtime_checkable
 class SpreadsheetReader(Protocol):
@@ -24,7 +32,7 @@ class SpreadsheetReader(Protocol):
     that would make them differ is a bug in whichever adapter is doing more than its job.
     """
 
-    def read_rows(self, data: bytes) -> list[dict[str, str]]:
+    def read_rows(self, data: bytes) -> list[Row]:
         """Parse ``data`` into one dictionary per data row.
 
         The first row is the header. Keys are header cells exactly as they appear in the
