@@ -120,9 +120,43 @@ job manage their own gitleaks).
 - **Do not reference dated working notes** (`docs/YYYY-MM-DD-*.md`) from committed code or docs.
   Committed files reference only durable committed files.
 
+## Persistence
+
+Two adapters, one contract suite, and a rule that shapes both.
+
+- **The schema comes only from Alembic** (ADR-0006), from an empty database, in every
+  environment including each test run. There is no `metadata.create_all()` anywhere and adding
+  one would mean testing against a schema nobody deploys. `session.migrate_to_head(url)` is the
+  entry point; it is synchronous because `env.py` drives its own event loop, so it must be
+  called from a thread rather than from inside a running one.
+- **The domain's value objects cannot be ORM-mapped.** Every one is
+  `@dataclass(frozen=True, slots=True)`, and a class with `__slots__` and no `__weakref__` slot
+  cannot be instrumented — `TypeError: cannot create weak reference`. Aggregate *roots* map
+  fine, and value objects work as `composite`s or `TypeDecorator`s because neither is
+  instrumented. The four internal collections are therefore JSON columns (ADR-0017), which is
+  why `for_student`, `holders_of` and friends filter in Python.
+- **`ImportJob` hits the same wall** and is application-owned, so a single `weakref_slot=True`
+  would fix it. Deliberately not done: adding a slot for the ORM's benefit is the persistence
+  layer reaching up a layer, and refusing that for the domain while accepting it here would be
+  arguing two ways. That one repository maps by hand, over Core.
+- **Two database roles** (ADR-0018): `ACADEMY_DATABASE_URL` for the application, which may
+  change rows and not the schema, and `ACADEMY_MIGRATION_DATABASE_URL` for Alembic, which owns
+  it. The application never migrates — with two roles it could not. Databases are named for
+  their environment (`academy_production`, `academy_test`) and the schema is `academy`, selected
+  per role with `search_path` rather than written into the table names, because a qualified
+  `academy.people` is DDL SQLite cannot run.
+
 ## Things that bite
 
 - `pytest` runs with `asyncio_mode = "auto"`; async tests need no decorator.
+- **An `Actor` rebuilt from an id alone has no roles.** `Actor(person_id=...)` defaults `roles`
+  to an empty frozenset, so it is not a smaller actor but a different one. Anywhere an actor is
+  reconstructed from storage, read the person and take their *current* roles.
+- **pytest-bdd never awaits an `async def` step.** It returns a coroutine, nobody runs it, and
+  the assertion after it passes. Steps are sync and call `asyncio.run`.
+- **A test written to expire should say so.** Two did — the SQLAlchemy-refused-at-startup pair —
+  and both failed on exactly the day the adapter landed, which is the point. Write the comment
+  that tells the next person to delete it rather than to fix it.
 - **Warnings are errors** (`filterwarnings = ["error", ...]`). A new ignore must name a
   *specific message*, never a bare category, and say why it cannot simply be fixed. The three
   present are all pytest-bdd/gherkin lag.
