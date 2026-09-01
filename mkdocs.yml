@@ -92,4 +92,6 @@ nav:
       - ADR-0018 Two database roles: decisions/0018-two-database-roles.md
       - ADR-0019 One failure classification, rendered per inbound adapter: decisions/0019-one-failure-classification-rendered-per-adapter.md
       - ADR-0020 argparse for the CLI, with the actor named by --as: decisions/0020-argparse-cli-with-an-asserted-actor.md
+      - ADR-0021 One driving port per route: decisions/0021-one-driving-port-per-route.md
+      - ADR-0022 Two ActorIdentity adapters and a placeholder credential check: decisions/0022-two-actor-identity-adapters-and-a-placeholder-credential-check.md
   - API reference: reference.md

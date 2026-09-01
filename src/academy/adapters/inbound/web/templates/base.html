@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    {# The one place htmx's swap rule is set. The content comes from
+       rendering.HTMX_RESPONSE_HANDLING via a Jinja global, so this tag cannot drift from the
+       constant a unit test asserts. Without it a 403 from the error boundary would be returned
+       honestly and then silently dropped by htmx, and the page would appear to do nothing. #}
+    <meta name="htmx-config" content="{{ htmx_config }}">
+    <title>{% block title %}academy{% endblock %}</title>
+    <script src="/static/htmx.min.js" defer></script>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 60rem; padding: 0 1rem; }
+      table { border-collapse: collapse; width: 100%; }
+      th, td { border-bottom: 1px solid #ddd; padding: 0.5rem; text-align: left; }
+      .passed { color: #12633f; }
+      .failed { color: #8a1f11; }
+      .errors:empty { display: none; }
+      .errors { background: #fdf2f0; border: 1px solid #d9a79c; padding: 0.75rem; margin: 1rem 0; }
+      .just-recorded { background: #f2f9f4; }
+      input[type="number"] { width: 4rem; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1><a href="/">academy</a></h1>
+    </header>
+
+    {# Every failure lands here, whichever element the request came from. errors.py sets
+       HX-Retarget to this id so an error never replaces the row that caused it. #}
+    <div id="academy-errors" class="errors" role="alert" aria-live="polite"></div>
+
+    <main>
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>

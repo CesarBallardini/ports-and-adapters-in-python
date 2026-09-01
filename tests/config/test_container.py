@@ -14,6 +14,7 @@ from uuid import UUID
 import pytest
 from sqlalchemy.exc import OperationalError
 
+from academy.adapters.outbound.identity import RepositoryActorIdentity, StaticActorIdentity
 from academy.adapters.outbound.persistence.sqlalchemy.session import migrate_to_head
 from academy.adapters.outbound.system import FixedClock, SystemClock
 from academy.application.commands import RecordGradeCommand, SubmitImportCommand, ViewAcademicHistoryCommand
@@ -23,7 +24,20 @@ from academy.application.jobs import ImportJob, ImportKind, JobStatus
 from academy.application.ports.inbound.grading import ManageGrades
 from academy.application.ports.inbound.imports import ImportData
 from academy.application.ports.inbound.records import ViewStudentRecords
-from academy.config import ENV_PERSISTENCE, ConfigurationError, Container, Defaults, PersistenceBackend, Settings
+from academy.config import (
+    ENV_BOOTSTRAP_ADMIN,
+    ENV_IDENTITY,
+    ENV_PERSISTENCE,
+    ENV_SECRET_KEY,
+    AsgiApplication,
+    ConfigurationError,
+    Container,
+    Defaults,
+    IdentityBackend,
+    PersistenceBackend,
+    Settings,
+    create_app,
+)
 from academy.domain.academics.course_section import CourseSection
 from academy.domain.academics.term import Term
 from academy.domain.people.email import Email
@@ -39,6 +53,9 @@ TERM = Term(2026, 1)
 TEACHER = PersonId(UUID(int=1))
 STUDENT = PersonId(UUID(int=2))
 OUTSIDER = PersonId(UUID(int=3))
+# The id a `static` identity is configured with: an administrator who has no person record,
+# which is the state a freshly migrated database is in (ADR-0022).
+BOOTSTRAP = PersonId(UUID(int=4))
 SECTION = SectionId(UUID(int=10))
 # Same teacher, nobody enrolled: lets a grade be recorded for a student the teacher does teach,
 # in a section that student is not in -- which fails inside the transaction, after a write.
@@ -472,3 +489,180 @@ async def test_the_container_reads_the_environment_once(monkeypatch: pytest.Monk
     monkeypatch.setenv('ACADEMY_PERSISTENCE', 'sqlalchemy')
 
     assert container.settings.persistence is PersistenceBackend.MEMORY
+
+
+# ---------------------------------------------------------------------------------------------
+# The identity axis (ADR-0022)
+# ---------------------------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_the_default_identity_reads_the_person_record() -> None:
+    """A running system resolves an actor by looking them up; that is the ordinary case."""
+    async with Container(Settings()).request_scope() as scope:
+        assert isinstance(scope.identity, RepositoryActorIdentity)
+
+
+@pytest.mark.unit
+async def test_the_static_identity_is_wired_when_a_deployment_asks_for_it() -> None:
+    settings = Settings(identity=IdentityBackend.STATIC, bootstrap_admin=str(BOOTSTRAP))
+
+    async with Container(settings).request_scope() as scope:
+        assert isinstance(scope.identity, StaticActorIdentity)
+
+
+@pytest.mark.unit
+async def test_the_bootstrap_administrator_resolves_without_a_person_record() -> None:
+    """The whole reason the second adapter exists.
+
+    The store is empty -- nothing has been added to it -- so the repository-backed identity would
+    resolve nobody at all, and there would be no way to reach the surface that creates the first
+    person. This is the way in, and it is the one thing it can do.
+    """
+    settings = Settings(identity=IdentityBackend.STATIC, bootstrap_admin=str(BOOTSTRAP))
+
+    async with Container(settings).request_scope() as scope:
+        actor = await scope.identity.resolve(BOOTSTRAP)
+
+    assert actor is not None
+    assert actor.is_administrator
+
+
+@pytest.mark.unit
+async def test_the_static_identity_resolves_nobody_else() -> None:
+    """One configured id, and it is not a skeleton key for every id.
+
+    A second configured administrator would be a second thing to forget to remove, and an
+    identity that answered for any id at all would be an authentication bypass.
+    """
+    settings = Settings(identity=IdentityBackend.STATIC, bootstrap_admin=str(BOOTSTRAP))
+
+    async with Container(settings).request_scope() as scope:
+        assert await scope.identity.resolve(PersonId(UUID(int=1234))) is None
+
+
+@pytest.mark.unit
+def test_a_static_identity_with_nothing_to_resolve_refuses_to_start() -> None:
+    """At startup, because such a process can serve no authenticated request at all."""
+    with pytest.raises(ConfigurationError) as failure:
+        Container(Settings(identity=IdentityBackend.STATIC))
+
+    assert ENV_BOOTSTRAP_ADMIN in str(failure.value)
+
+
+@pytest.mark.unit
+def test_a_bootstrap_id_that_is_not_a_uuid_refuses_to_start() -> None:
+    """Named, so the fix is obvious without reading the composition root."""
+    with pytest.raises(ConfigurationError) as failure:
+        Container(Settings(identity=IdentityBackend.STATIC, bootstrap_admin='dana@example.edu'))
+
+    assert 'not a UUID' in str(failure.value)
+
+
+@pytest.mark.unit
+def test_an_unknown_identity_backend_is_rejected_with_the_alternatives_named() -> None:
+    with pytest.raises(ConfigurationError) as failure:
+        Settings.from_env({ENV_IDENTITY: 'ldap'})
+
+    assert 'repository' in str(failure.value)
+    assert 'static' in str(failure.value)
+
+
+@pytest.mark.unit
+def test_the_identity_axis_is_independent_of_the_persistence_axis() -> None:
+    """Which database is underneath says nothing about how a person id becomes an actor.
+
+    A deployment that had to change both together is one where the bootstrap case -- a durable,
+    migrated, empty database -- could not exist.
+    """
+    settings = Settings.from_env(
+        {
+            ENV_PERSISTENCE: 'sqlalchemy',
+            ENV_IDENTITY: 'static',
+            ENV_BOOTSTRAP_ADMIN: str(BOOTSTRAP),
+        }
+    )
+
+    assert settings.persistence is PersistenceBackend.SQLALCHEMY
+    assert settings.identity is IdentityBackend.STATIC
+
+
+# ---------------------------------------------------------------------------------------------
+# The signing key
+# ---------------------------------------------------------------------------------------------
+
+
+# A literal in a test, not a credential: bandit and ruff cannot tell them apart, and the check
+# earns its keep everywhere else.
+CHOSEN_KEY = 'chosen-by-the-deployment'  # noqa: S105
+
+
+@pytest.mark.unit
+def test_a_deployment_that_named_a_key_gets_that_key() -> None:
+    assert Container(Settings(secret_key=CHOSEN_KEY)).secret_key == CHOSEN_KEY
+
+
+@pytest.mark.unit
+def test_an_in_memory_deployment_gets_a_generated_key() -> None:
+    """Nothing survives a restart there anyway, so a session that does not either is consistent.
+
+    It is also what makes ``make run`` and the whole test suite work with no environment at all.
+    """
+    container = Container(Settings())
+
+    assert len(container.secret_key) >= 32
+
+
+@pytest.mark.unit
+def test_a_generated_key_is_fixed_once_it_has_been_used() -> None:
+    """Otherwise every request would sign with a different key and nothing would verify."""
+    container = Container(Settings())
+
+    assert container.secret_key == container.secret_key
+
+
+@pytest.mark.unit
+def test_two_processes_get_different_generated_keys() -> None:
+    """Which is exactly why a durable deployment may not have one generated for it."""
+    assert Container(Settings()).secret_key != Container(Settings()).secret_key
+
+
+@pytest.mark.unit
+def test_a_durable_deployment_without_a_key_is_refused_when_the_key_is_needed() -> None:
+    """Deferred to first use, not raised at construction, and the distinction is load-bearing.
+
+    A CLI invocation and an import worker have no sessions to sign. Demanding a signing key from
+    them would mean a deployment of either had to invent one to satisfy a check for a surface it
+    does not run.
+    """
+    container = Container(Settings(persistence=PersistenceBackend.SQLALCHEMY))
+
+    with pytest.raises(ConfigurationError) as failure:
+        _ = container.secret_key
+
+    assert ENV_SECRET_KEY in str(failure.value)
+
+
+@pytest.mark.unit
+async def test_a_durable_deployment_without_a_key_still_serves_the_cli() -> None:
+    """The other half: nothing that does not ask for a key is troubled by its absence."""
+    container = Container(Settings(persistence=PersistenceBackend.SQLALCHEMY))
+    try:
+        async with container.request_scope() as scope:
+            assert scope.grade_management() is not None
+    finally:
+        await container.aclose()
+
+
+@pytest.mark.unit
+def test_the_asgi_factory_returns_something_uvicorn_can_serve() -> None:
+    """``create_app``'s return type is a promise, and this is it kept.
+
+    The signature says :class:`AsgiApplication` rather than ``FastAPI`` because naming the class
+    would import it at module scope and undo the lazy import the CLI depends on. That makes the
+    annotation a structural claim about a type the file never names -- exactly the kind that goes
+    stale silently -- so it is checked at run time as well as by two type checkers.
+    """
+    application = create_app({})
+
+    assert isinstance(application, AsgiApplication)

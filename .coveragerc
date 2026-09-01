@@ -15,13 +15,20 @@
 # number fails the moment a new adapter lands ahead of its contract tests, which
 # punishes the order this repository builds in.
 #
-# The remaining gap is two things, both measured rather than guessed. The port
+# The remaining gap is three things, all measured rather than guessed. The port
 # modules nothing implements yet sit at 0%, because a `Protocol` body never
-# executes until an adapter satisfies it -- `notifications` and `identity` are
-# the whole list, and both recover when the web adapter lands. The rest is the
-# copied domain, whose tests are copied too and cannot be added to (ADR-0002).
-# `src/academy/__main__.py` is a third, smaller case: it is covered by the e2e
-# tier, in a subprocess coverage does not measure.
+# executes until an adapter satisfies it -- `notifications` is now the whole
+# list, `identity` having recovered when the web adapter gave it two adapters
+# and a contract suite (ADR-0022). The bulk is the copied domain, whose tests are
+# copied too and cannot be added to (ADR-0002).
+#
+# The third is the entry points, which are covered by the e2e tier in
+# subprocesses coverage does not measure: `src/academy/__main__.py`, and the
+# `create_app` body in `src/academy/config/__init__.py`. Both are the
+# best-tested lines in the repository and will always look like the worst --
+# `tests/e2e/test_web_process.py` starts a real uvicorn against the second one.
+# Do not "fix" either by calling it from an in-process test: what the e2e tier
+# proves about them is precisely that they work in a process nobody set up.
 #
 # Do not buy any of them with a test written for the number. An import statement
 # that lights up a port module moves the figure without moving the risk.

@@ -24,9 +24,16 @@ repos:
       - id: check-yaml
         exclude: ^mkdocs\.yml$
       - id: detect-private-key
+      # The vendored front-end assets are excluded from the three whitespace
+      # hooks. `htmx.min.js` is one very long line whose whole value is being
+      # byte-identical to the published release its checksum names, and a hook
+      # that rewrote it would invalidate that silently. See the README beside it.
       - id: end-of-file-fixer
+        exclude: ^src/academy/adapters/inbound/web/static/.*\.(js|css)$
       - id: trailing-whitespace
+        exclude: ^src/academy/adapters/inbound/web/static/.*\.(js|css)$
       - id: mixed-line-ending
+        exclude: ^src/academy/adapters/inbound/web/static/.*\.(js|css)$
 
       # Work lands on a branch and through a PR, which is what the CI and
       # security gates key off. Both names are guarded: this repository was

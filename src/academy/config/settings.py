@@ -56,6 +56,9 @@ ENV_MIGRATION_DATABASE_URL: Final = 'ACADEMY_MIGRATION_DATABASE_URL'
 ENV_UPLOAD_DIRECTORY: Final = 'ACADEMY_UPLOAD_DIRECTORY'
 ENV_IMPORT_INLINE_THRESHOLD: Final = 'ACADEMY_IMPORT_INLINE_THRESHOLD_BYTES'
 ENV_IMPORT_MAX_BYTES: Final = 'ACADEMY_IMPORT_MAX_BYTES'
+ENV_IDENTITY: Final = 'ACADEMY_IDENTITY'
+ENV_BOOTSTRAP_ADMIN: Final = 'ACADEMY_BOOTSTRAP_ADMIN'
+ENV_SECRET_KEY: Final = 'ACADEMY_SECRET_KEY'  # noqa: S105 -- a variable's name, not its value
 
 
 def _read(source: Environ, name: str) -> str | None:
@@ -123,6 +126,38 @@ def _size(value: str | None, name: str, default: int) -> int:
     return size
 
 
+def _choice[BackendT: StrEnum](value: str | None, name: str, backends: type[BackendT], default: BackendT) -> BackendT:
+    """Parse a variable whose value must be one of an enum's members, or say what those were.
+
+    The rule both backend variables follow, written once. Saying nothing accepts our choice --
+    :func:`_read` has already turned absent and blank alike into ``None`` -- while an
+    *unreadable* value is an error: ``ACADEMY_PERSISTENCE=postgres`` is a deployment asking for
+    something specific, and silently ignoring it would start a process nobody asked for.
+
+    Args:
+        value: What the deployment set, already normalised by :func:`_read`.
+        name: The variable's name, for the error message.
+        backends: The enum whose members are the acceptable answers.
+        default: What an unset variable means.
+
+    Returns:
+        The member named, or ``default``.
+
+    Raises:
+        ConfigurationError: If ``value`` is not one of the members, with the list of those that
+            are -- a typo is the likeliest cause and the message should be enough to fix it
+            without reading this file.
+    """
+    if value is None:
+        return default
+
+    try:
+        return backends(value.lower())
+    except ValueError as exc:
+        supported = ', '.join(backend.value for backend in backends)
+        raise ConfigurationError(f'{name}={value!r} is not valid; expected one of: {supported}') from exc
+
+
 class PersistenceBackend(StrEnum):
     """Which family of persistence adapters the composition root should wire.
 
@@ -133,6 +168,23 @@ class PersistenceBackend(StrEnum):
 
     MEMORY = 'memory'
     SQLALCHEMY = 'sqlalchemy'
+
+
+class IdentityBackend(StrEnum):
+    """How an authenticated person id is turned into an actor.
+
+    Two answers, and they are not a real one and a fake one (ADR-0014): ``repository`` reads the
+    person record and is what a running system uses, while ``static`` resolves a configured id
+    without touching storage and is how an empty database gets its first administrator -- see
+    :mod:`academy.adapters.outbound.identity.static` for why that is a real problem rather than a
+    convenience.
+
+    ``static`` is deliberately not the default. A deployment has to ask for it, which is what
+    makes leaving it on afterwards a visible choice rather than an oversight.
+    """
+
+    REPOSITORY = 'repository'
+    STATIC = 'static'
 
 
 class Defaults:
@@ -176,6 +228,10 @@ class Defaults:
     # pending job pointing at nothing, which is a failure the worker reports and nobody can fix.
     UPLOAD_DIRECTORY: Final = './academy_uploads'
 
+    # Read the person record. The other backend exists for a database with no person records in
+    # it yet, which is a state a deployment passes through once and should not sit in.
+    IDENTITY: Final = IdentityBackend.REPOSITORY
+
 
 @dataclass(frozen=True, slots=True)
 class _Values:
@@ -198,6 +254,14 @@ class _Values:
     # None means "the same database, with whatever privileges that URL carries" -- which is
     # what a developer on SQLite has, since SQLite has no roles to separate (ADR-0018).
     migration_database_url: str | None = None
+    identity: IdentityBackend = Defaults.IDENTITY
+    # Both None-able and both left *unresolved* here on purpose. Settings record what a
+    # deployment asked for; deciding whether a combination can be built, and inventing a value
+    # for one it left out, is the composition root's job (ADR-0015). `Container` raises
+    # `ConfigurationError` for a `static` identity with no id and for a durable deployment with
+    # no signing key, at startup, where every other unbuildable combination is already caught.
+    bootstrap_admin: str | None = None
+    secret_key: str | None = None
 
 
 class Settings:
@@ -224,6 +288,9 @@ class Settings:
         database_url: str = Defaults.DATABASE_URL,
         migration_database_url: str | None = None,
         upload_directory: str = Defaults.UPLOAD_DIRECTORY,
+        identity: IdentityBackend = Defaults.IDENTITY,
+        bootstrap_admin: str | None = None,
+        secret_key: str | None = None,
     ) -> None:
         """Build the configuration a deployment is to run with.
 
@@ -237,6 +304,11 @@ class Settings:
                 deployment must not leave unset.
             upload_directory: Where a queued import's payload is written when storage is
                 durable. Ignored by the in-memory backend, which keeps payloads in the process.
+            identity: How an authenticated person id becomes an actor.
+            bootstrap_admin: The person id a ``static`` identity resolves, as text. Required
+                by that backend and meaningless to the other.
+            secret_key: What signs session cookies and bearer tokens. ``None`` means the
+                deployment said nothing, which a durable one may not do.
         """
         self._values = _Values(
             persistence=persistence,
@@ -245,6 +317,9 @@ class Settings:
             database_url=database_url,
             migration_database_url=migration_database_url,
             upload_directory=upload_directory,
+            identity=identity,
+            bootstrap_admin=bootstrap_admin,
+            secret_key=secret_key,
         )
 
     @classmethod
@@ -260,7 +335,8 @@ class Settings:
             The configuration object, with defaults filled in for anything unset.
 
         Raises:
-            ConfigurationError: If ``ACADEMY_PERSISTENCE`` names a backend that does not exist.
+            ConfigurationError: If ``ACADEMY_PERSISTENCE`` or ``ACADEMY_IDENTITY`` names a
+                backend that does not exist.
         """
         source = os.environ if environ is None else environ
         return cls(
@@ -276,6 +352,9 @@ class Settings:
             database_url=_read(source, ENV_DATABASE_URL) or Defaults.DATABASE_URL,
             migration_database_url=_read(source, ENV_MIGRATION_DATABASE_URL),
             upload_directory=_read(source, ENV_UPLOAD_DIRECTORY) or Defaults.UPLOAD_DIRECTORY,
+            identity=cls._identity(_read(source, ENV_IDENTITY)),
+            bootstrap_admin=_read(source, ENV_BOOTSTRAP_ADMIN),
+            secret_key=_read(source, ENV_SECRET_KEY),
         )
 
     @property
@@ -324,6 +403,39 @@ class Settings:
         """
         return self._values.persistence
 
+    @property
+    def identity(self) -> IdentityBackend:
+        """How an authenticated person id becomes an actor.
+
+        Read by :class:`~academy.config.container.Container` at startup and by nothing else. No
+        inbound adapter can tell which backend answered it, which is the property that lets the
+        bootstrap case exist at all without any route knowing about it.
+        """
+        return self._values.identity
+
+    @property
+    def bootstrap_admin(self) -> str | None:
+        """The person id a ``static`` identity resolves, as the deployment wrote it.
+
+        Text rather than a :class:`~academy.domain.shared.ids.PersonId`, because settings record
+        what was typed and an unparseable id is a configuration error the composition root
+        reports by name -- not an exception raised while reading the environment.
+
+        ``None`` when unset, which is an error only if the identity backend is ``static``.
+        """
+        return self._values.bootstrap_admin
+
+    @property
+    def secret_key(self) -> str | None:
+        """What signs session cookies and bearer tokens, or ``None`` if unset.
+
+        Unresolved on purpose. A deployment that says nothing here is asking to be given
+        something, and what it should be given depends on whether anything else about the
+        deployment is durable -- which is a question :class:`~academy.config.container.Container`
+        answers, not this record.
+        """
+        return self._values.secret_key
+
     def __eq__(self, other: object) -> bool:
         """Whether two configurations say the same thing.
 
@@ -345,26 +457,10 @@ class Settings:
 
     @staticmethod
     def _backend(value: str | None) -> PersistenceBackend:
-        """Parse a backend name, or say what the acceptable ones were.
+        """Parse which family of persistence adapters to wire."""
+        return _choice(value, ENV_PERSISTENCE, PersistenceBackend, Defaults.PERSISTENCE)
 
-        A variable that was not really set takes the default -- :func:`_read` has already
-        turned absent and blank alike into ``None`` -- while an *unreadable* one is an error.
-        The difference is deliberate: saying nothing is a deployment accepting our choice,
-        while ``ACADEMY_PERSISTENCE=postgres`` is a deployment asking for something specific,
-        and silently ignoring that would start a process nobody asked for.
-
-        Raises:
-            ConfigurationError: If ``value`` is not one of the backends, with the list of
-                those that are -- a typo is the likeliest cause and the message should be
-                enough to fix it without reading this file.
-        """
-        if value is None:
-            return Defaults.PERSISTENCE
-
-        try:
-            return PersistenceBackend(value.lower())
-        except ValueError as exc:
-            supported = ', '.join(backend.value for backend in PersistenceBackend)
-            raise ConfigurationError(
-                f'{ENV_PERSISTENCE}={value!r} is not a persistence backend; expected one of: {supported}'
-            ) from exc
+    @staticmethod
+    def _identity(value: str | None) -> IdentityBackend:
+        """Parse which identity adapter turns a person id into an actor."""
+        return _choice(value, ENV_IDENTITY, IdentityBackend, Defaults.IDENTITY)

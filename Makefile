@@ -93,10 +93,11 @@ precommit: ## Run all pre-commit hooks against every file
 cli: ## Run the CLI driving adapter, e.g. make cli ARGS="config show"
 	uv run --frozen python -m academy $(ARGS)
 
-# Fails until the web adapter lands: `academy.config:create_app` is not written yet. Left
-# pointing at the name it will have rather than deleted, because the composition root is where
-# it belongs and the target is the specification of that.
-run: ## Serve the HTTP driving adapter on :8000 -- not written yet, see `make cli`
+# With no environment at all this serves the in-memory backend with a generated signing key,
+# which is empty and forgets everything on restart -- useful for looking at the pages, useless
+# for anything else. `tests/e2e/test_web_process.py` starts the server exactly this way, so the
+# target and the test cannot drift.
+run: ## Serve the HTTP driving adapter on :8000
 	uv run --frozen uvicorn --factory academy.config:create_app --reload --port 8000
 
 clean: ## Remove build, cache and coverage artifacts

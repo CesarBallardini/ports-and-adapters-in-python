@@ -19,7 +19,8 @@ any of them knowing which database is underneath.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+import secrets
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
@@ -28,6 +29,7 @@ from typing import Self
 
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from academy.adapters.outbound.identity import RepositoryActorIdentity, StaticActorIdentity
 from academy.adapters.outbound.persistence.memory import (
     MemoryAcademicHistoryRepository,
     MemoryConfigurationRepository,
@@ -60,6 +62,7 @@ from academy.adapters.outbound.system import SystemClock
 from academy.adapters.outbound.system.ids import Uuid4IdGenerator
 from academy.application.authorization import AccessGuard, RelationshipResolver
 from academy.application.commands import RunImportJobCommand
+from academy.application.dtos import Actor
 from academy.application.grading import GradeManagement
 from academy.application.importing import GradeSheetImporter, ImportService, SpreadsheetFormats
 from academy.application.jobs import ImportJob, ImportKind, JobId
@@ -67,6 +70,7 @@ from academy.application.ports.inbound.grading import ManageGrades
 from academy.application.ports.inbound.imports import ImportData
 from academy.application.ports.inbound.records import ViewStudentRecords
 from academy.application.ports.outbound.file_storage import FileStorage
+from academy.application.ports.outbound.identity import ActorIdentity
 from academy.application.ports.outbound.repositories import (
     AcademicHistoryRepository,
     ConfigurationRepository,
@@ -78,7 +82,88 @@ from academy.application.ports.outbound.repositories import (
 from academy.application.ports.outbound.system import Clock, IdGenerator
 from academy.application.ports.outbound.unit_of_work import UnitOfWork
 from academy.application.records import StudentRecords
-from academy.config.settings import Environ, PersistenceBackend, Settings
+from academy.config.settings import (
+    ENV_BOOTSTRAP_ADMIN,
+    ENV_IDENTITY,
+    ENV_SECRET_KEY,
+    ConfigurationError,
+    Environ,
+    IdentityBackend,
+    PersistenceBackend,
+    Settings,
+)
+from academy.domain.people.role import Role
+from academy.domain.shared.ids import PersonId
+
+
+def _regardless_of(identity: ActorIdentity, _people: PersonRepository) -> ActorIdentity:
+    """Adapt a process-lifetime identity to the per-scope signature the other branch needs.
+
+    :class:`~academy.adapters.outbound.identity.static.StaticActorIdentity` reads no repository,
+    so it is built once and shared; ``RepositoryActorIdentity`` is built per scope from that
+    scope's repository. This makes the two branches the same shape, which is what lets
+    :meth:`Container._scope` name neither of them.
+    """
+    return identity
+
+
+def _bootstrap_actors(bootstrap_admin: str | None) -> Mapping[PersonId, Actor]:
+    """Build the population a ``static`` identity resolves, from what the deployment configured.
+
+    Args:
+        bootstrap_admin: The person id, as text, or ``None`` if unset.
+
+    Returns:
+        A single-entry mapping: the configured id, holding the administrative role. One entry
+        because bootstrapping needs exactly one person -- the one who creates the others -- and
+        a second configured administrator would be a second thing to forget to remove.
+
+    Raises:
+        ConfigurationError: If the id is missing or is not a UUID. Both at startup, because a
+            ``static`` identity with nothing to resolve is a process that can serve no
+            authenticated request at all, and finding that out on the first sign-in attempt
+            would be finding it out from a user.
+    """
+    if bootstrap_admin is None:
+        raise ConfigurationError(
+            f'{ENV_IDENTITY}={IdentityBackend.STATIC.value} needs {ENV_BOOTSTRAP_ADMIN} set to a person id'
+        )
+
+    try:
+        person_id = PersonId.from_str(bootstrap_admin)
+    except ValueError as error:
+        raise ConfigurationError(f'{ENV_BOOTSTRAP_ADMIN}={bootstrap_admin!r} is not a UUID') from error
+
+    return {person_id: Actor(person_id=person_id, roles=frozenset({Role.ADMINISTRATIVE_EMPLOYEE}))}
+
+
+def _signing_key(settings: Settings) -> str:
+    """Decide what signs this deployment's sessions.
+
+    A deployment that named a key gets it. One that did not gets an answer that depends on
+    whether anything about it is durable:
+
+    * **In-memory persistence** -- a random key per process. Nothing survives a restart there
+      anyway, so a session that does not either is consistent rather than surprising, and it is
+      what makes ``make run`` and the whole test suite work with no environment at all.
+    * **A real database** -- an error. A generated key would be a different key in every worker
+      of a multi-process deployment, so a signed-in user would be signed out by whichever worker
+      answered next; and every deploy would log everyone out. Both look like flaky sessions and
+      neither points at the cause.
+
+    Raises:
+        ConfigurationError: If persistence is durable and no key was set.
+    """
+    if settings.secret_key is not None:
+        return settings.secret_key
+
+    if settings.persistence is PersistenceBackend.MEMORY:
+        return secrets.token_urlsafe(32)
+
+    raise ConfigurationError(
+        f'{ENV_SECRET_KEY} must be set when persistence is {PersistenceBackend.SQLALCHEMY.value}: '
+        'a generated key differs between workers and between restarts, which signs users out at random'
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +198,10 @@ class Scope:
     formats: SpreadsheetFormats
     import_inline_threshold_bytes: int
     import_max_bytes: int
+    # Scoped rather than process-lifetime because the repository-backed adapter reads through
+    # this scope's repositories, and a request must not resolve its actor through another
+    # request's session. The static adapter has no such need and is simply shared.
+    identity: ActorIdentity
 
     def grade_management(self) -> ManageGrades:
         """Build the grading use cases (UC-21, UC-22).
@@ -235,8 +324,10 @@ class Container:
                 configures it.
 
         Raises:
-            ConfigurationError: If the chosen persistence backend has no adapter yet. Raised
-                here, at startup, rather than on the first request that needs a repository.
+            ConfigurationError: If the chosen persistence backend has no adapter yet, or if the
+                ``static`` identity was chosen without a bootstrap id to resolve. Both raised
+                here, at startup, rather than on the first request that needs the missing piece.
+                The signing key is the one deliberate exception -- see :attr:`secret_key`.
         """
         self._settings = settings
         self._clock: Clock = clock or SystemClock()
@@ -266,6 +357,21 @@ class Container:
             self._storage = LocalFileStorage(Path(settings.upload_directory))
             self._open_scope = partial(self._session_scope, sessions)
 
+        # The second branch, and it is deliberately independent of the first: which database is
+        # underneath says nothing about how a person id becomes an actor, and a deployment that
+        # had to change both together would be one where the bootstrap case could not exist.
+        if settings.identity is IdentityBackend.STATIC:
+            static = StaticActorIdentity(_bootstrap_actors(settings.bootstrap_admin))
+            self._identity_for: Callable[[PersonRepository], ActorIdentity] = partial(_regardless_of, static)
+        else:
+            self._identity_for = RepositoryActorIdentity
+
+        # Resolved on demand rather than here, because not every driver has sessions to sign.
+        # The CLI and the import worker never ask, and a deployment of either should not have to
+        # invent a signing key to satisfy a check for a surface it does not run (ADR-0019: each
+        # inbound adapter owns its own vocabulary, and this is part of the web adapter's).
+        self._secret_key: str | None = settings.secret_key
+
     @classmethod
     def from_env(cls, environ: Environ | None = None, clock: Clock | None = None) -> Self:
         """Build the container a deployment's environment describes.
@@ -288,6 +394,27 @@ class Container:
         the environment a second time.
         """
         return self._settings
+
+    @property
+    def secret_key(self) -> str:
+        """What an inbound adapter signs sessions and tokens with.
+
+        Read from here rather than from :attr:`settings` because the setting is optional and
+        this is not: "the deployment said nothing" is turned into either a generated key or a
+        refusal to start (see :func:`_signing_key`), so a caller gets an answer and never a
+        ``None`` to handle.
+
+        Resolved on first access and then fixed, which is what makes the two halves true at
+        once: a web process asking for it during ``create_app`` fails at startup if the
+        deployment is durable and set no key, while a CLI invocation that never asks is never
+        troubled by a requirement that does not apply to it.
+
+        Raises:
+            ConfigurationError: If this deployment is durable and named no key.
+        """
+        if self._secret_key is None:
+            self._secret_key = _signing_key(self._settings)
+        return self._secret_key
 
     @asynccontextmanager
     async def request_scope(self) -> AsyncIterator[Scope]:
@@ -371,6 +498,7 @@ class Container:
             formats=self._formats,
             import_inline_threshold_bytes=self._settings.import_inline_threshold_bytes,
             import_max_bytes=self._settings.import_max_bytes,
+            identity=self._identity_for(people),
         )
 
     async def aclose(self) -> None:
