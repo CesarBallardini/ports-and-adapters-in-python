@@ -49,6 +49,7 @@ from academy.config.container import Container
 from academy.config.settings import PersistenceBackend, Settings
 from academy.domain.academics.course_section import CourseSection
 from academy.domain.academics.term import Term
+from academy.domain.grades.grade import Grade
 from academy.domain.grades.grade_entry import GradeEntry
 from academy.domain.people.email import Email
 from academy.domain.people.person import Person
@@ -165,6 +166,11 @@ async def _entries_in_a_fresh_session(url: str) -> list[GradeEntry]:
             return list(history.entries) if history is not None else []
     finally:
         await engine.dispose()
+
+
+def _entry(grade: int) -> GradeEntry:
+    """One transcript entry, in the section the fixtures set up."""
+    return GradeEntry(subject_id=MATHEMATICS, term=Term(2026, 1), grade=Grade(grade), source_section_id=SECTION)
 
 
 async def test_a_grade_recorded_over_http_is_actually_written(signed_in: httpx.AsyncClient, database: str) -> None:
@@ -320,19 +326,21 @@ async def test_two_concurrent_requests_each_get_their_own_unit_of_work(
     assert sorted(entry.grade.value for entry in await _entries_in_a_fresh_session(database)) == [5, 9]
 
 
-async def test_two_concurrent_first_grades_both_succeed(signed_in: httpx.AsyncClient, database: str) -> None:
-    """The get-or-create race, fixed and now asserted the right way round.
+async def test_two_concurrent_first_grades_are_both_accepted(signed_in: httpx.AsyncClient, database: str) -> None:
+    """The get-or-create race, fixed: neither request is a 500 any more.
 
     This replaces a test that was written to expire. Two requests recording a student's *first*
     grade both find no transcript and both try to create one; the loser used to violate the
     primary key and raise ``IntegrityError``, which no entry in ADR-0012's table classifies, so it
-    reached the client as a 500 with a traceback.
+    reached the client as a 500 with a traceback. The port promises the opposite -- *"This method
+    never raises for a student with no grades yet"* -- so the adapter was wrong, and it now
+    retries inside a SAVEPOINT and returns the winner's row.
 
-    The port's promise is the opposite -- *"This method never raises for a student with no grades
-    yet"* -- so the adapter was wrong, and it now retries inside a SAVEPOINT and returns the
-    winner's row. Both requests therefore succeed and **both grades are kept**, which is the part
-    that matters: the domain keeps every attempt, and a race that silently dropped one would be
-    data loss rather than a bad status.
+    **What this deliberately does not assert is that both grades are kept.** They may not be, and
+    the reason has nothing to do with the race this test is named after: see
+    :func:`test_a_concurrent_writer_still_overwrites_the_other`, which pins that defect on its
+    own. Asserting it here would have made one test fail for two unrelated causes, and it did --
+    this assertion was written as ``== [5, 6]`` and CI was right to reject it.
     """
     page = await signed_in.get(f'/sections/{SECTION}/grades')
     token = _csrf(page.text)
@@ -351,8 +359,72 @@ async def test_two_concurrent_first_grades_both_succeed(signed_in: httpx.AsyncCl
     assert first.status_code == 200, first.text
     assert second.status_code == 200, second.text
 
+    # A transcript exists and holds at least one of the two attempts. Which ones survive is the
+    # subject of the next test; that the request was answered rather than crashing is this one's.
     stored = sorted(entry.grade.value for entry in await _entries_in_a_fresh_session(database))
-    assert stored == [5, 6], stored
+    assert stored, 'the transcript is empty: neither concurrent first grade was stored at all'
+    assert set(stored) <= {5, 6}
+
+
+async def test_a_concurrent_writer_still_overwrites_the_other(database: str) -> None:
+    """A known defect, asserted deterministically so that fixing it is noticed. **Delete this test
+    when it starts failing** -- it is written to expire, and a failure here is the good news.
+
+    Two units of work read the same transcript, each append one entry, and each ``save`` writes
+    the collection **whole**, because ADR-0017 keeps it as JSON on the aggregate's row. The second
+    commit therefore overwrites the first, and a grade a teacher was told had been recorded is
+    gone. Nothing raises and nothing logs.
+
+    This is *not* the get-or-create race, and the SAVEPOINT fix does not touch it: the run below
+    seeds an existing transcript first, so no row is ever created and no ``IntegrityError`` is
+    ever possible. It is the plain lost update, and it is reachable from two ordinary HTTP
+    requests -- CI found it that way, through ``asyncio.gather`` over two POSTs, before it was
+    pinned here.
+
+    It is sequenced by hand rather than raced, because a test for a defect has to fail every time
+    or it is not a test. It is also *not* in the contract suite: the in-memory adapter does not
+    have this defect -- both scopes mutate the one object it stores -- so there is no shared
+    assertion to write, and this belongs beside the adapter that has it.
+
+    **What fixing it looks like:** optimistic concurrency, via SQLAlchemy's ``version_id_col``. A
+    version column per aggregate turns ``save`` into ``UPDATE ... WHERE id = ? AND version = ?``,
+    and a stale write raises ``StaleDataError`` instead of succeeding -- silent data loss becomes
+    a ``ConflictError``, which ADR-0012's table already classifies. Plain SQL, so it behaves the
+    same on SQLite and PostgreSQL; row locking would not, and ``SELECT ... FOR UPDATE`` is a
+    no-op on SQLite, which would leave this test passing while proving nothing.
+    """
+    engine = create_engine(database)
+    try:
+        factory = create_session_factory(engine)
+
+        async with factory() as seeding:
+            repository = SqlAlchemyAcademicHistoryRepository(seeding)
+            existing = await repository.get_or_create(STUDENT)
+            existing.record(_entry(3))
+            await repository.save(existing)
+            await seeding.commit()
+
+        async with factory() as one, factory() as other:
+            # Both read before either writes -- the shape of any two concurrent requests.
+            first = await SqlAlchemyAcademicHistoryRepository(one).get_or_create(STUDENT)
+            second = await SqlAlchemyAcademicHistoryRepository(other).get_or_create(STUDENT)
+
+            first.record(_entry(5))
+            await SqlAlchemyAcademicHistoryRepository(one).save(first)
+            await one.commit()
+
+            second.record(_entry(6))
+            await SqlAlchemyAcademicHistoryRepository(other).save(second)
+            await other.commit()
+    finally:
+        await engine.dispose()
+
+    stored = sorted(entry.grade.value for entry in await _entries_in_a_fresh_session(database))
+
+    assert stored == [3, 6], (
+        f'expected the lost update this test documents, and got {stored}. '
+        'If this reads [3, 5, 6] the defect is fixed -- delete this test rather than adjusting it.'
+    )
 
 
 async def test_the_json_api_writes_through_the_same_way(signed_in: httpx.AsyncClient, database: str) -> None:
