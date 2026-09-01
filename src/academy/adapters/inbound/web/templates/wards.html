@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}My wards &middot; academy{% endblock %}
+
+{% block content %}
+<h2>Students in my care</h2>
+
+{# Derived on every read from each ward's age against the age of majority. Nothing is written
+   when a ward comes of age, so this list can be shorter tomorrow with no record having changed
+   -- which is exactly what the guardian_wards feature demonstrates. #}
+<table>
+  <thead>
+    <tr><th>Student</th><th>Transcript</th></tr>
+  </thead>
+  <tbody>
+    {% for ward in wards %}
+      <tr id="ward-{{ ward.id }}">
+        <td>{{ ward.full_name }}</td>
+        <td><a href="/students/{{ ward.id }}/transcript">View transcript</a></td>
+      </tr>
+    {% else %}
+      <tr><td colspan="2">Nobody is currently in your care.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<form method="post" action="/sign-out">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit">Sign out</button>
+</form>
+{% endblock %}

@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Transcript &middot; academy{% endblock %}
+
+{% block content %}
+<h2>Transcript</h2>
+<p>Student {{ history.student_id }}</p>
+
+<h3>Standing by subject</h3>
+{# `passed` is computed from `best_grade` on every read and never stored, which is why a
+   transcript cannot go stale against its own entries. #}
+<table>
+  <thead>
+    <tr><th>Subject</th><th>Best grade</th><th>Standing</th><th>Attempts</th></tr>
+  </thead>
+  <tbody>
+    {% for standing in history.standings %}
+      <tr>
+        <td>{{ standing.subject_id }}</td>
+        <td>{% if standing.best_grade is none %}&mdash;{% else %}{{ standing.best_grade }}{% endif %}</td>
+        <td class="{{ 'passed' if standing.passed else 'failed' }}">{{ 'passed' if standing.passed else 'not passed' }}</td>
+        <td>{{ standing.attempts }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="4">No grades have been recorded yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<h3>Every attempt</h3>
+<table>
+  <thead>
+    <tr><th>Subject</th><th>Term</th><th>Grade</th></tr>
+  </thead>
+  <tbody>
+    {% for entry in history.entries %}
+      <tr><td>{{ entry.subject_id }}</td><td>{{ entry.term }}</td><td>{{ entry.grade }}</td></tr>
+    {% else %}
+      <tr><td colspan="3">Nothing recorded.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<form method="post" action="/sign-out">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit">Sign out</button>
+</form>
+{% endblock %}

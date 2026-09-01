@@ -29,6 +29,7 @@ from academy.adapters.inbound.web.rendering import Surface, Templates
 from academy.adapters.inbound.web.security import SESSION_COOKIE, Credentials, NotAuthenticatedError
 from academy.application.dtos import Actor
 from academy.application.ports.inbound.grading import ManageGrades
+from academy.application.ports.inbound.records import ViewStudentRecords
 from academy.application.ports.outbound.repositories import PersonRepository
 from academy.config.container import Container, Scope
 
@@ -120,6 +121,14 @@ def grade_management(opened: ScopeDependency) -> ManageGrades:
     return opened.grade_management()
 
 
+def student_records(opened: ScopeDependency) -> ViewStudentRecords:
+    """Build the transcript-reading use cases for this request.
+
+    No unit of work is involved: these only read, and a transaction is a write boundary.
+    """
+    return opened.student_records()
+
+
 def people_for_sign_in(opened: ScopeDependency) -> PersonRepository:
     """The one repository an adapter is allowed to hold, and only for signing in.
 
@@ -154,6 +163,7 @@ def api_surface(request: Request) -> None:
 # route may reach, rather than a parameter someone tacked on.
 CurrentActor = Annotated[Actor, Depends(current_actor)]
 Grades = Annotated[ManageGrades, Depends(grade_management)]
+Records = Annotated[ViewStudentRecords, Depends(student_records)]
 PageTemplates = Annotated[Templates, Depends(templates_of)]
 SignInCredentials = Annotated[Credentials, Depends(credentials_of)]
 SignInPeople = Annotated[PersonRepository, Depends(people_for_sign_in)]

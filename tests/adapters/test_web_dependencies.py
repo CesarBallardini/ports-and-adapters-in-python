@@ -29,7 +29,7 @@ from fastapi.dependencies.models import Dependant
 from fastapi.routing import APIRoute
 
 from academy.adapters.inbound.web import dependencies
-from academy.adapters.inbound.web.routers import api, auth, grades
+from academy.adapters.inbound.web.routers import api, auth, grades, records
 from academy.application.ports.inbound.grading import ManageGrades
 from academy.application.ports.inbound.imports import ImportData
 from academy.application.ports.inbound.records import ViewStudentRecords
@@ -53,6 +53,7 @@ DRIVING_PORTS: tuple[TypeForm, ...] = (ManageGrades, ViewStudentRecords, ImportD
 ROUTERS: tuple[tuple[str, APIRouter, Callable[..., None]], ...] = (
     ('auth', auth.router, dependencies.web_surface),
     ('grades', grades.router, dependencies.web_surface),
+    ('records', records.router, dependencies.web_surface),
     ('api', api.router, dependencies.api_surface),
 )
 
@@ -136,6 +137,8 @@ def test_the_adapter_has_the_routes_this_module_claims_to_check() -> None:
     assert ('/api/sections/{section_id}/grades', ('GET',)) in paths
     assert ('/api/sections/{section_id}/grades', ('POST',)) in paths
     assert ('/sign-in', ('POST',)) in paths
+    assert ('/wards', ('GET',)) in paths
+    assert ('/students/{student_id}/transcript', ('GET',)) in paths
 
 
 def test_no_route_takes_a_scope() -> None:
@@ -203,6 +206,8 @@ def _returns_scope(call: Callable[..., object]) -> bool:
         ('/sections/{section_id}/grades', 'POST', ManageGrades),
         ('/api/sections/{section_id}/grades', 'GET', ManageGrades),
         ('/api/sections/{section_id}/grades', 'POST', ManageGrades),
+        ('/wards', 'GET', ViewStudentRecords),
+        ('/students/{student_id}/transcript', 'GET', ViewStudentRecords),
     ],
 )
 def test_each_route_names_exactly_the_driving_port_it_needs(path: str, method: str, port: TypeForm) -> None:
@@ -266,7 +271,7 @@ def test_only_the_browser_routers_enforce_csrf() -> None:
 
     enforcing = {name for name, router, _ in ROUTERS if enforce in _router_dependencies(router)}
 
-    assert enforcing == {'auth', 'grades'}
+    assert enforcing == {'auth', 'grades', 'records'}
 
 
 def test_every_dependency_alias_is_used_by_some_route() -> None:

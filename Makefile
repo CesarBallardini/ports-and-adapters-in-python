@@ -1,14 +1,19 @@
 .DEFAULT_GOAL := help
 
 .PHONY: help install lint format arch types test test-unit test-bdd test-integration test-e2e \
-        coverage security secrets licenses docs docs-serve release-next precommit cli run clean
+        coverage security secrets licenses docs docs-serve release-next precommit cli run clean \
+        migrate demo bootstrap test-browser
 
 help: ## Show this list of available targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*## "}; {printf "\033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
-install: ## Sync the environment (from the committed lockfile) and install the git hooks
+install: ## Sync the environment (from the committed lockfile), the git hooks and the browser
 	uv sync --all-groups --all-extras --frozen
 	uv run --frozen pre-commit install
+	# Chromium, for the four browser tests in the e2e tier. Without it they skip with a message
+	# naming this command, and CI installs it too -- so the skip only ever affects a developer
+	# mid-setup, never a pull request.
+	uv run --frozen playwright install chromium
 
 lint: ## Check formatting and lint rules without modifying files
 	uv run --frozen ruff check .
@@ -41,8 +46,27 @@ test-integration: ## Run only the integration tests (real SQLite adapter + port 
 # nothing and make reports that as a failure, which was noise while the tier was unwritten. The
 # CLI's e2e tests landed, so an empty selection is a signal again -- someone deleted the last
 # test, or the marker stopped matching -- and this target says so.
-test-e2e: ## Run end-to-end tests (spawns the real CLI; the HTTP server joins it in Phase C)
-	uv run --frozen pytest -m e2e
+# `-v` because this tier is slow and small: the useful output is *which* end-to-end tests ran,
+# printed as they run, rather than a progress bar followed by twenty duration lines. It is also
+# the tier whose failures are hardest to place, so naming each test as it starts says which
+# spawned process was the one that hung.
+test-e2e: ## Run end-to-end tests (spawns the real CLI and a real uvicorn server)
+	uv run --frozen pytest -m e2e -v
+
+# Headless by default, like every other target: CI has no display, and a suite whose default
+# depends on a window manager behaves differently on somebody else's machine.
+#
+#   make test-browser              headless, as CI runs it
+#   make test-browser HEADED=1     a visible window, slowed so a person can follow the swaps
+#
+# SLOWMO is what actually makes it watchable -- a headed browser still finishes each action in
+# milliseconds, which is too fast to see an htmx swap land.
+HEADED ?=
+SLOWMO ?= 400
+BROWSER_FLAGS = $(if $(HEADED),--headed --slowmo $(SLOWMO),)
+
+test-browser: ## Run only the Playwright tests, e.g. make test-browser HEADED=1 SLOWMO=800
+	uv run --frozen pytest tests/e2e/test_web_browser.py -m e2e -v $(BROWSER_FLAGS)
 
 coverage: ## Run the test suite with coverage and enforce the floor from .coveragerc
 	uv run --frozen pytest --cov=academy --cov-config=.coveragerc --cov-report=term-missing --cov-report=html
@@ -93,12 +117,37 @@ precommit: ## Run all pre-commit hooks against every file
 cli: ## Run the CLI driving adapter, e.g. make cli ARGS="config show"
 	uv run --frozen python -m academy $(ARGS)
 
-# With no environment at all this serves the in-memory backend with a generated signing key,
-# which is empty and forgets everything on restart -- useful for looking at the pages, useless
-# for anything else. `tests/e2e/test_web_process.py` starts the server exactly this way, so the
-# target and the test cannot drift.
-run: ## Serve the HTTP driving adapter on :8000
-	uv run --frozen uvicorn --factory academy.config:create_app --reload --port 8000
+# The development deployment, and the three targets below share its environment so that what
+# `make demo` seeds is what `make run` serves. In-memory persistence would be simpler and would
+# also mean every seeded row vanished before the server came up, so this uses the SQLite file
+# `Defaults.DATABASE_URL` already names.
+#
+# The signing key is fixed rather than generated, so a restart does not sign you out mid-session.
+# It is a development key in a Makefile in a public repository: it is not a secret, and a real
+# deployment sets ACADEMY_SECRET_KEY to something that is.
+DEV_ENV = ACADEMY_PERSISTENCE=sqlalchemy ACADEMY_SECRET_KEY=development-only-not-a-secret
+
+migrate: ## Bring the development database up to the newest migration (schema only, no data)
+	$(DEV_ENV) uv run --frozen python -c \
+	  "from academy.config import Settings; \
+	   from academy.adapters.outbound.persistence.sqlalchemy.session import migrate_to_head; \
+	   migrate_to_head(Settings.from_env().migration_database_url)"
+
+demo: migrate ## Seed the development database with the demo people, and print their credentials
+	$(DEV_ENV) uv run --frozen python -m academy.config.seeding demo
+
+bootstrap: migrate ## Create the first administrator, e.g. make bootstrap EMAIL=you@x.edu NAME="Your Name"
+	@test -n "$(EMAIL)" || { echo 'EMAIL is required: make bootstrap EMAIL=you@example.edu NAME="Your Name"'; exit 1; }
+	@test -n "$(NAME)"  || { echo 'NAME is required: make bootstrap EMAIL=you@example.edu NAME="Your Name"'; exit 1; }
+	$(DEV_ENV) uv run --frozen python -m academy.config.seeding bootstrap --email '$(EMAIL)' --name '$(NAME)'
+
+# The credentials are printed by the same module that creates them, so this target and `make demo`
+# cannot drift into naming different accounts.
+run: migrate ## Serve the HTTP driving adapter on :8000, showing the demo credentials
+	@uv run --frozen python -m academy.config.seeding credentials
+	@echo "  (run 'make demo' first if these accounts do not exist yet)"
+	@echo
+	$(DEV_ENV) uv run --frozen uvicorn --factory academy.config:create_app --reload --port 8000
 
 clean: ## Remove build, cache and coverage artifacts
 	rm -rf site/ dist/ build/ htmlcov/ .coverage coverage.xml \

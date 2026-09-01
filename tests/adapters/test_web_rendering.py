@@ -229,7 +229,16 @@ def test_every_template_that_ships_is_reachable() -> None:
     """No orphan templates: each one is rendered by some route or included by one that is."""
     shipped = {path.name for path in Path(rendering.TEMPLATES_DIRECTORY).glob('*.html')}
 
-    assert shipped == {'base.html', 'error.html', '_error.html', 'grades.html', '_grade_row.html', 'sign_in.html'}
+    assert shipped == {
+        'base.html',
+        'error.html',
+        '_error.html',
+        'grades.html',
+        '_grade_row.html',
+        'sign_in.html',
+        'wards.html',
+        'transcript.html',
+    }
 
 
 def _row() -> object:
