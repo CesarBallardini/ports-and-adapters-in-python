@@ -1,0 +1,21 @@
+{# One student's row: the whole of what a recorded grade changes.
+
+   Returned by POST /sections/{id}/grades and swapped in place of the row it came from. It
+   receives a SectionGradeRowDto and never a domain entity, so nothing this template can reach
+   has behaviour to invoke. #}
+<tr id="student-{{ row.student_id }}"{% if just_recorded %} class="just-recorded"{% endif %}>
+  <td>{{ row.full_name }}</td>
+  <td>{% if row.best_grade is none %}&mdash;{% else %}{{ row.best_grade }}{% endif %}</td>
+  <td class="{{ 'passed' if row.passed else 'failed' }}">{{ 'passed' if row.passed else 'not passed' }}</td>
+  <td>{{ row.attempts }}</td>
+  <td>
+    <form hx-post="/sections/{{ section_id }}/grades"
+          hx-target="#student-{{ row.student_id }}"
+          hx-swap="outerHTML">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="student_id" value="{{ row.student_id }}">
+      <input type="number" name="grade" min="0" max="10" required aria-label="Grade for {{ row.full_name }}">
+      <button type="submit">Record</button>
+    </form>
+  </td>
+</tr>

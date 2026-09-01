@@ -1,0 +1,5 @@
+{# A failure, as htmx swaps it into the page's error region.
+
+   Not a document: errors.py retargets this at #academy-errors, so it is the region's contents
+   and nothing more. #}
+<p class="failed" role="alert"><strong>{{ failure }}</strong> &mdash; {{ detail }}</p>

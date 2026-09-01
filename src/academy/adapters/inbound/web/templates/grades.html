@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Grades &middot; {{ sheet.term }}{% endblock %}
+
+{% block content %}
+<h2>Section {{ sheet.section_id }}</h2>
+<p>Subject {{ sheet.subject_id }} &middot; {{ sheet.term }}</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Student</th>
+      <th>Best grade</th>
+      <th>Standing</th>
+      <th>Attempts</th>
+      <th>Record</th>
+    </tr>
+  </thead>
+  <tbody>
+    {# The row template is shared with the htmx fragment, which sets this to highlight the row it
+       just changed. Declared here rather than defaulted inside the row, so that StrictUndefined
+       keeps catching a genuinely missing variable instead of being softened everywhere. #}
+    {% set just_recorded = false %}
+    {% set section_id = sheet.section_id %}
+    {% for row in sheet.rows %}
+      {% include "_grade_row.html" %}
+    {% else %}
+      <tr><td colspan="5">Nobody is enrolled in this section.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<form method="post" action="/sign-out">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit">Sign out</button>
+</form>
+{% endblock %}

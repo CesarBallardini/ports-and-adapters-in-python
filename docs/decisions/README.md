@@ -26,3 +26,5 @@ references it, never edited in place.
 | [0018](./0018-two-database-roles.md) | Two database roles: migrations own the schema, the application owns the data | Accepted |
 | [0019](./0019-one-failure-classification-rendered-per-adapter.md) | One failure classification, rendered per inbound adapter | Accepted |
 | [0020](./0020-argparse-cli-with-an-asserted-actor.md) | argparse for the CLI, with the actor named by `--as` | Accepted |
+| [0021](./0021-one-driving-port-per-route.md) | One driving port per route, and one error boundary | Accepted |
+| [0022](./0022-two-actor-identity-adapters-and-a-placeholder-credential-check.md) | Two `ActorIdentity` adapters, and a labelled placeholder credential check | Accepted |

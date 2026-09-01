@@ -5,7 +5,7 @@ It is the second half of a diptych with `localenv-python` (tooling) and the cont
 `multi-tenant-python`'s roadmap.
 
 Read `docs/` in numbered order: description → use cases → sequence diagrams → state diagrams →
-domain model → class diagram. Decisions live in `docs/decisions/` as ADR-0001..0020, and are
+domain model → class diagram. Decisions live in `docs/decisions/` as ADR-0001..0022, and are
 the first place to look before changing anything structural.
 
 ## The one rule that outranks the others
@@ -76,11 +76,19 @@ least two adapters — in-memory *and* SQLAlchemy, CSV *and* XLSX, local *and* S
 them are parametrised through a single shared contract test. In-memory adapters are
 production-grade adapters, not test doubles, and they live in `src/`, not in `tests/`.
 
-The corollary is that a port with **no** implementation should not grow one speculatively.
-`ActorIdentity` is the standing example: it resolves an already-authenticated person id, the CLI
-has no authentication step to produce one (ADR-0020), and inventing an adapter for it now would
-mean one implementation and no second caller to keep it honest. It waits for the web adapter,
-which brings a real session and a second caller in the same change.
+The corollary is that a port with **no** implementation should not grow one speculatively — and
+`ActorIdentity` was the standing example until the web adapter landed. It waited through the CLI
+because `--as <email>` produces no authenticated id (ADR-0020), and it now has two adapters and
+two callers in the same change (ADR-0022). What it leaves behind is the shape of the argument:
+
+**Write the second adapter only when it answers a case the first genuinely cannot.**
+`StaticActorIdentity` is not `RepositoryActorIdentity` with the database swapped out — it exists
+because a freshly migrated database has no person to read, so nobody resolves and nobody can
+reach the surface that would create the first person. A second adapter that only differs in what
+is underneath it is testing the layer below, not the port.
+
+`Notifier` is now the only port with no implementation, and the same question applies to it when
+its turn comes.
 
 ### Rule 5 — Quality gate per phase
 
@@ -174,7 +182,12 @@ Two adapters, one contract suite, and a rule that shapes both.
 
 ## Inbound adapters
 
-One exists so far — the CLI — and it sets the shape the others follow.
+Two exist — the CLI and the web adapter — and the second one is why the first one's rules are
+written as rules. **Everything in this section that is not marked CLI-only or web-only held
+across a change of protocol**, which is the evidence that it was a property of the architecture
+rather than of `argparse`.
+
+### The CLI
 
 - **Four modules along the seam that matters**: `parser.py` owns the grammar and imports no
   handler; `commands.py` owns the handlers and parses no argv; `render.py` owns the output and
@@ -201,6 +214,51 @@ One exists so far — the CLI — and it sets the shape the others follow.
   `ApplicationError` and `DomainError` (the table decides), and lets everything else escape with
   its traceback — which exits 1, the same status `Failure`-less classification means.
 
+### The web adapter
+
+The same rules, in FastAPI's idiom (ADR-0021, ADR-0022). `app.py` owns the control flow,
+`dependencies.py` the port-per-route rule, `rendering.py` the htmx contract, `errors.py` the one
+error boundary, `security.py` and `csrf.py` the credential edge, `routers/` the routes.
+
+- **One driving port per route, as one dependency per port.** `Grades =
+  Annotated[ManageGrades, Depends(grade_management)]`, and a route's signature is the list of
+  what it may reach. **Exactly two places may name a `Scope`**: the `scope` dependency and the
+  lifespan. `tests/adapters/test_web_dependencies.py` fails on a third, on a route naming a
+  `Scope` or a `Container`, and on a route naming two driving ports.
+- **Sign-in is the one route that holds a repository**, because authentication is not a use case
+  and has no driving port (ADR-0010). A test asserts it stays the only one.
+- **htmx 2 does not swap a non-2xx response.** So an honest 403 reaches the browser and is
+  discarded, and the page appears to do nothing. `rendering.HTMX_RESPONSE_HANDLING` overrides
+  that once — 4xx becomes swappable, 5xx does not — and is rendered into `base.html`'s
+  `htmx-config` meta tag *from the Python constant*, so the two cannot drift. Every failure to an
+  htmx request also carries `HX-Retarget: #academy-errors`, so an error never replaces the row
+  that caused it. **Do not "fix" a swallowed error by returning 200**: that throws away the
+  status every non-browser client depends on, which is the trade this module exists to refuse.
+- **The rendering is chosen by the router, never sniffed.** Each router's dependency marks
+  `request.state` with a `Surface`; `rendering.surface_of` narrows it back with an `isinstance`,
+  which is where `request.state`'s `Any` stops — the web adapter's `Args`. Not `Accept`
+  negotiation (htmx sends `*/*`) and not `path.startswith('/api/')`.
+- **CSRF applies to the cookie and not to the bearer header**, because nothing attaches an
+  `Authorization` header on a caller's behalf. On an unsafe method the CSRF check runs *before*
+  authentication — it is a router dependency and the actor is a route dependency — so an
+  unauthenticated POST reports 403 CSRF and not 401. That ordering is right and is asserted.
+- **`verify_credentials` is a labelled placeholder and is not fit to deploy** (ADR-0010,
+  ADR-0022). Module banner, function docstring, and a test asserting both labels still exist.
+- **`ACADEMY_SECRET_KEY` is resolved lazily**, on `Container.secret_key`. In-memory persistence
+  generates one; a durable deployment without one is a `ConfigurationError`. Lazy because the CLI
+  and the worker have no sessions to sign and must not have to invent a key for a surface they do
+  not run.
+- **`ACADEMY_IDENTITY=static` + `ACADEMY_BOOTSTRAP_ADMIN`** is how an empty database gets its
+  first administrator. Independent of `ACADEMY_PERSISTENCE` on purpose. It is meant to be turned
+  off again.
+- Templates receive **DTOs, never domain entities** — a template holding a `CourseSection` could
+  call `enroll` on it and a page render would become a write. `StrictUndefined` is on, so a
+  renamed DTO field breaks the build instead of rendering a blank cell that looks like a student
+  with no grade.
+- **htmx is vendored**, not loaded from a CDN, with its version and checksum in
+  `src/academy/adapters/inbound/web/static/README.md`. On upgrade, re-check the default
+  `responseHandling` rules — a unit test reads them out of the file and will tell you.
+
 ## Things that bite
 
 - `pytest` runs with `asyncio_mode = "auto"`; async tests need no decorator.
@@ -222,12 +280,24 @@ One exists so far — the CLI — and it sets the shape the others follow.
 - **MkDocs runs `strict: true`, so every page under `docs/` must appear in `mkdocs.yml`'s nav.**
   Writing ADR-0015 and not adding it there turns `make docs` red. That is deliberate: it is what
   stops a decision being written and then never linked.
-- **The e2e tier shares one database across the module, so only a read or a dry run is safe
-  there.** `tests/e2e/` migrates and seeds once (`scope='module'`) because spawning an
-  interpreter per test is already the expensive part. A test that *writes* would leak into every
+- **Each e2e module shares one database, so only a read or a dry run is safe there.** Each
+  module migrates and seeds once (`scope='module'`) because spawning an interpreter is already
+  the expensive part. A test that *writes* would leak into every
   test after it, in an order pytest is free to change. `import run --dry-run` is safe by
   construction — the import happens in full and is rolled back — and that is why the two import
-  e2e tests are dry runs. A writing e2e test needs its own database, not a new row in this one.
+  e2e tests are dry runs. A writing e2e test needs its own database, not a new row in this one. The
+  web module follows the same rule: signing in reads and is safe, recording a grade writes and is
+  asserted in the integration tier instead.
+- **A subprocess fixture must `communicate()`, not `wait()`.** `wait` leaves the stdout pipe for
+  the garbage collector to close, which raises during finalisation — and since warnings are
+  errors here, that turns a passing module into a teardown failure with no useful message.
+- **`academy.config` imports the web adapter inside `create_app`, not at module scope.** The CLI
+  needs no extra (ADR-0020); a top-level import would make `python -m academy config show` fail
+  with `ModuleNotFoundError: fastapi` on a bare `uv sync`. An e2e test asserts importing the
+  composition root does not pull FastAPI in.
+- **`httpx.ASGITransport` does not run the lifespan**, so an integration test never exercises
+  startup or shutdown. That is what the uvicorn e2e module is for; do not add a lifespan
+  assertion to the integration tier, it will pass without running anything.
 - **A contract test that never leaves its transaction tests answers, not writes.** The repository
   contract ran entirely inside one session for months and was passing while the SQLAlchemy
   adapter discarded every collection change. Anything asserting that something was *stored* has

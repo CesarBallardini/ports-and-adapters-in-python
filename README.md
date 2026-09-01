@@ -104,13 +104,15 @@ Honest state of the work, since this is a repository under construction:
 | Tooling scaffold — uv, ruff, pyright, pyrefly, bandit, pre-commit, CI | done, green |
 | Domain layer + its unit tests, copied verbatim | done, green |
 | Design documentation — 01 to 06 | done |
-| 20 ADRs | done |
+| 22 ADRs | done |
 | Application layer — driven ports, driving ports, DTOs, commands, authorization | done, green |
 | Use cases — grading, student records, bulk import | done, green |
 | Outbound adapters — in-memory, SQLAlchemy + Alembic, csv/openpyxl, storage, queue | done, green |
 | Composition root — settings, container, per-request scope | done, green |
 | Inbound adapter — CLI (`python -m academy`) | done, green |
-| Inbound adapters — htmx web, JSON API, worker | **not yet implemented** |
+| Inbound adapter — htmx web + JSON API, over the grading use cases | done, green |
+| Web + API routes for student records and bulk import | **not yet implemented** |
+| Inbound adapter — background worker | **not yet implemented** |
 | Remaining repositories — programs, subjects, credentials, graduations, plan enrollments | **not yet implemented** |
 
 ## Getting started
@@ -155,6 +157,29 @@ Two things are interfaces and the prose is not: `--json` on any command, and the
 `8` rule, `9` configuration, `10` import incomplete
 ([ADR-0019](./docs/decisions/0019-one-failure-classification-rendered-per-adapter.md)). So
 `import run --dry-run` is worth putting in CI: it exits non-zero when a row would be rejected.
+
+The **web adapter** serves the browser UI and the JSON API over the *same* use cases
+([ADR-0011](./docs/decisions/0011-htmx-for-the-web-adapter.md),
+[ADR-0021](./docs/decisions/0021-one-driving-port-per-route.md)):
+
+```bash
+make run                                          # uvicorn on :8000, in memory, no setup
+```
+
+Then sign in at `http://localhost:8000/sign-in` as any seeded person and open a section's grade
+sheet. Recording a grade `hx-post`s the form and swaps back the one row that changed — that is
+the whole of the htmx pattern, and the JSON API at `/api/sections/<id>/grades` reaches the same
+`ManageGrades` port through a bearer token instead of a cookie. A test records the same grade
+both ways and demands the identical outcome, which is what makes "one hexagon, four drivers" a
+claim rather than a diagram.
+
+**The credential check is a deliberate placeholder and is not fit to deploy**
+([ADR-0010](./docs/decisions/0010-session-cookie-web-bearer-api.md),
+[ADR-0022](./docs/decisions/0022-two-actor-identity-adapters-and-a-placeholder-credential-check.md)).
+It finds a person by email and ignores the password. Everything around it is real — the session
+is signed and expires, and authorization reads the person's roles fresh on every request — but
+password hashing is out of scope for a repository about ports and adapters, and the module says
+so in a banner you cannot miss.
 
 Configuration is environment variables read once at startup, all prefixed `ACADEMY_`, so
 `env | grep ACADEMY_` is a deployment's entire configuration. With none set it runs in memory.
