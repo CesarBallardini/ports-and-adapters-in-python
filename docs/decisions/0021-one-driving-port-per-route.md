@@ -36,6 +36,7 @@ the body, which throws away the status every non-browser client depends on.
 ```python
 Grades = Annotated[ManageGrades, Depends(grade_management)]
 
+
 @router.get('/sections/{section_id}/grades')
 async def grade_sheet(section_id: str, grades: Grades, actor: CurrentActor) -> Response: ...
 ```

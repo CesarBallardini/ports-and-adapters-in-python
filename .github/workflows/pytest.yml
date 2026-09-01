@@ -84,6 +84,13 @@ jobs:
 
       - uses: ./.github/actions/setup-python
 
+      # The browser tier skips itself when Chromium is missing, which makes this step the
+      # thing that stops it skipping silently forever. `--with-deps` pulls the shared
+      # libraries a headless Chromium needs on a bare runner; only Chromium is installed,
+      # because only Chromium is used.
+      - name: Install the browser the e2e tier drives
+        run: uv run --frozen playwright install --with-deps chromium
+
       # No ALLOW_EMPTY_TIER equivalent here either: pytest exits 5 when a marker selects
       # nothing, and now that this tier has tests that is a failure worth reporting.
       - name: Run the e2e tier

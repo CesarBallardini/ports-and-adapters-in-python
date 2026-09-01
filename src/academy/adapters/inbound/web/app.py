@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 
 from academy.adapters.inbound.web import errors
 from academy.adapters.inbound.web.rendering import STATIC_DIRECTORY, Templates
-from academy.adapters.inbound.web.routers import api, auth, grades
+from academy.adapters.inbound.web.routers import api, auth, grades, records
 from academy.adapters.inbound.web.security import Credentials
 from academy.config.container import Container
 
@@ -77,6 +77,7 @@ def create_app(container: Container) -> FastAPI:
     app.mount(STATIC_PATH, StaticFiles(directory=STATIC_DIRECTORY), name='static')
     app.include_router(auth.router)
     app.include_router(grades.router)
+    app.include_router(records.router)
     app.include_router(api.router)
     errors.install(app, templates)
 

@@ -259,12 +259,51 @@ error boundary, `security.py` and `csrf.py` the credential edge, `routers/` the 
   `src/academy/adapters/inbound/web/static/README.md`. On upgrade, re-check the default
   `responseHandling` rules — a unit test reads them out of the file and will tell you.
 
+## Seeding
+
+Two commands, neither of them a migration, and that is a decision (see
+`src/academy/config/seeding.py`).
+
+- **`make demo`** creates the fictional people and one section, and prints their credentials.
+  Idempotent: a second run says so and changes nothing.
+- **`make bootstrap EMAIL=... NAME="..."`** creates *one* administrator, which is what an empty
+  durable deployment needs to have a way in at all. `ACADEMY_BOOTSTRAP_ADMIN` (ADR-0022) does not
+  cover this: it resolves an already-authenticated *id*, and the sign-in form asks for an
+  *address* it then looks up in the repository.
+- **`make run` prints the demo credentials** by calling the same module that creates them, so the
+  two cannot name different accounts. It runs against the development SQLite file rather than the
+  in-memory backend, because in-memory would discard everything `make demo` just wrote.
+
+**Do not seed fixtures with Alembic.** Four reasons, and the first is this repository's own:
+
+1. **ADR-0018 splits the roles.** Migrations connect as the role that owns the *schema*; the
+   application owns the *rows*. Seeding application data with the DDL role crosses exactly the
+   boundary that split exists to draw.
+2. **A migration reaches one adapter.** Rule 4 gives every port a memory implementation as well
+   as a SQLAlchemy one; going through the repositories means seeding works on both.
+3. **Fixtures are not history.** A migration is immutable once shipped; demo data is edited
+   whenever somebody wants another student.
+4. **The domain gets a say.** `section.enroll(...)` enforces what an `INSERT` would not.
+
+Alembic *is* right for reference data a schema is meaningless without — and this application has
+none. `ConfigurationRepository.age_of_majority` returns a documented default when no row exists,
+deliberately, so **a blank database is already a working one** and needs no initial data
+migration. Adding one would create a second source of truth for that default.
+
 ## Things that bite
 
 - `pytest` runs with `asyncio_mode = "auto"`; async tests need no decorator.
 - **An `Actor` rebuilt from an id alone has no roles.** `Actor(person_id=...)` defaults `roles`
   to an empty frozenset, so it is not a smaller actor but a different one. Anywhere an actor is
   reconstructed from storage, read the person and take their *current* roles.
+- **A Gherkin phrase must be unambiguous against every *other* phrase in the file.**
+  `the list is {name}` also matches `the list is empty` and binds `name='empty'`; `{name} is
+  signed in` also matches `nobody is signed in`. Both were written and both failed. Spell the
+  special case literally — `@then('the list is empty')` — or word it so it cannot collide.
+- **A feature file driven twice needs two step modules and no edits to the feature.**
+  `guardian_wards.feature` has one set of steps calling the use case and one driving the web
+  adapter, and `record_a_grade.feature` is web-only for now. If a scenario ever has to be reworded
+  to go through a second adapter, the spec has absorbed the first one.
 - **pytest-bdd never awaits an `async def` step.** It returns a coroutine, nobody runs it, and
   the assertion after it passes. Steps are sync and call `asyncio.run`.
 - **A test written to expire should say so.** Two did — the SQLAlchemy-refused-at-startup pair —
@@ -280,6 +319,20 @@ error boundary, `security.py` and `csrf.py` the credential edge, `routers/` the 
 - **MkDocs runs `strict: true`, so every page under `docs/` must appear in `mkdocs.yml`'s nav.**
   Writing ADR-0015 and not adding it there turns `make docs` red. That is deliberate: it is what
   stops a decision being written and then never linked.
+- **There is exactly one browser tier, and it should stay that way.**
+  `tests/e2e/test_web_browser.py` drives real Chromium through Playwright, and exists for the one
+  claim nothing else can reach: that htmx *actually swaps* a 4xx into the page (ADR-0021). Every
+  other web assertion is about what the server sends, and httpx makes those far more cheaply — a
+  new browser test is a signal that something was put there which belonged a tier down. `make
+  install` downloads Chromium; without it those tests skip with the command that fixes it, and
+  the CI job installs it so the skip never hides them on a pull request. **When one fails, watch
+  it**: `make test-browser HEADED=1` opens a real window, and `SLOWMO` (400 ms by default) is what
+  makes it followable — headed alone still finishes each action in milliseconds. Headless stays
+  the default everywhere, because CI has no display.
+- **A grade of 11 cannot be submitted from the browser.** `<input type="number" max="10">` stops
+  it client-side, so the 422 that `test_web.py` asserts is reachable only from a non-browser
+  client. Both paths are real; only one is reachable from that page. Writing a browser test
+  around the invalid grade is the obvious first idea and it does not work.
 - **Each e2e module shares one database, so only a read or a dry run is safe there.** Each
   module migrates and seeds once (`scope='module'`) because spawning an interpreter is already
   the expensive part. A test that *writes* would leak into every
@@ -295,6 +348,21 @@ error boundary, `security.py` and `csrf.py` the credential edge, `routers/` the 
   needs no extra (ADR-0020); a top-level import would make `python -m academy config show` fail
   with `ModuleNotFoundError: fastapi` on a bare `uv sync`. An e2e test asserts importing the
   composition root does not pull FastAPI in.
+- **The web adapter's tests were blind to persistence until `test_web_persistence.py`.**
+  `test_web.py` runs on the in-memory backend, so every read-back goes through the store the
+  write went into — the same shape that hid the JSON-collection bug in the contract suite for
+  months. Anything asserting a route *stored* something belongs in `test_web_persistence.py`,
+  which commits, disposes the engine and re-reads through a fresh one.
+- **`get_or_create` is a race unless it is written to be one.** "Read, then insert" means two
+  transactions both find nothing and both insert; the loser used to raise `IntegrityError`, which
+  ADR-0012's table does not classify, so a teacher grading at the same moment as a colleague got a
+  500. The SQLAlchemy adapter now inserts inside a **SAVEPOINT** and returns the winner's row on
+  conflict — a plain flush would poison the whole transaction and take the caller's work with it.
+  Do not "tidy up" by expunging the losing instance afterwards: rolling back the savepoint has
+  already evicted it, and `expunge` then raises `InvalidRequestError`.
+  `test_get_or_create_survives_two_transactions_racing_to_create_the_same_history` is in the
+  **contract** suite, because the promise is the port's — the in-memory adapter satisfies it for a
+  different reason (it never awaits between the check and the write) and must keep doing so.
 - **`httpx.ASGITransport` does not run the lifespan**, so an integration test never exercises
   startup or shutdown. That is what the uvicorn e2e module is for; do not add a lifespan
   assertion to the integration tier, it will pass without running anything.
