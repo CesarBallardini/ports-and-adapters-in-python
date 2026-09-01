@@ -23,6 +23,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from sqlalchemy import RowMapping, Table, delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -339,14 +340,44 @@ class SqlAlchemyAcademicHistoryRepository(_SqlAlchemyRepository[AcademicHistory,
         ``save`` finds it. Recording a student's first grade is exactly that sequence, and an
         adapter that returned an unstored object would break on it while satisfying every other
         assertion in the contract suite.
+
+        **Safe against a concurrent first call.** "Read, then insert" is a race whenever two
+        transactions run it at once: both find nothing, both ``INSERT``, and the loser violates the
+        primary key. The port promises this method never raises for a student with no grades yet,
+        so losing that race has to be handled here rather than surfacing as an unclassified 500 --
+        which is exactly what it did before, because ``IntegrityError`` is in no entry of
+        ADR-0012's table.
+
+        The insert therefore runs inside a **SAVEPOINT**. Without one, a failed flush leaves the
+        whole transaction unusable and the caller's own work would be lost along with it; with
+        one, only the failed insert is rolled back and the request continues. The winner's row is
+        then read back and returned, so both callers get the same transcript and neither can tell
+        which of them created it.
         """
         stored = await self.get(student_id)
         if stored is not None:
             return stored
 
         created = AcademicHistory(student_id)
-        self._session.add(created)
-        await self._session.flush()
+        try:
+            async with self._session.begin_nested():
+                self._session.add(created)
+                await self._session.flush()
+        except IntegrityError:
+            # Somebody inserted it between our read and our insert, so read theirs and return it.
+            #
+            # Nothing is expunged here, and that is not an oversight: rolling back the SAVEPOINT
+            # has already evicted the losing instance from the session, so calling `expunge` on it
+            # raises `InvalidRequestError: Instance is not present in this Session`. Tidying up
+            # after SQLAlchemy is how this method acquired a *second* failure mode the first time
+            # it was written.
+            existing = await self.get(student_id)
+            if existing is None:  # pragma: no cover -- the winner had not committed yet
+                # Genuinely unresolvable from here: the row exists for the database and not yet
+                # for this transaction. Re-raising is honest; inventing a third empty history
+                # would be a second losing INSERT.
+                raise
+            return existing
         return created
 
     async def for_students(self, student_ids: list[PersonId]) -> list[AcademicHistory]:

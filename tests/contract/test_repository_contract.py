@@ -741,3 +741,56 @@ async def test_a_history_created_on_first_use_survives_the_transaction_that_crea
         stored = await backend.histories.get(BEA)
         assert stored is not None
         assert [entry.grade.value for entry in stored.entries] == [9]
+
+
+@pytest.mark.unit
+async def test_get_or_create_returns_an_existing_history_with_its_entries(storage: Storage) -> None:
+    """It returns the transcript that is there, not a fresh empty one that would overwrite it.
+
+    Sharper than ``test_get_or_create_returns_the_existing_history``, which only compares ids.
+    An adapter that recovered from a lost race by handing back a *new* ``AcademicHistory`` would
+    satisfy that one and silently drop every grade the student already had, because the caller's
+    next ``save`` writes what it was given.
+    """
+    async with storage.transaction() as backend:
+        history = await backend.histories.get_or_create(ANN)
+        history.record(GradeEntry(subject_id=MATH, term=THIS_TERM, grade=Grade(8)))
+        await backend.histories.save(history)
+
+    async with storage.transaction() as backend:
+        again = await backend.histories.get_or_create(ANN)
+
+    assert [entry.grade.value for entry in again.entries] == [8]
+
+
+@pytest.mark.unit
+async def test_get_or_create_survives_two_transactions_racing_to_create_the_same_history(
+    storage: Storage,
+) -> None:
+    """The port says this method never raises for a student with no grades yet. Including here.
+
+    "Read, then insert" is a race whenever two transactions run it at once: both find nothing,
+    both insert, and the loser violates the primary key. In the SQLAlchemy adapter that surfaced
+    as ``IntegrityError``, which no entry in ADR-0012's table classifies -- so a teacher recording
+    a grade at the same moment as a colleague got a 500 with a traceback.
+
+    It is in the **contract** suite rather than beside the adapter that had the bug because the
+    promise belongs to the port: the in-memory adapter satisfies it for a different reason (it
+    never awaits between the check and the write) and must keep doing so. An implementation that
+    is only accidentally safe is one refactor away from not being.
+
+    Concurrency in one event loop is enough to expose it: each transaction is a separate session,
+    and ``asyncio.gather`` interleaves them at every ``await``.
+    """
+    first, second = await asyncio.gather(_create_history(storage, BEA), _create_history(storage, BEA))
+
+    assert first.id == second.id == BEA
+
+    async with storage.transaction() as backend:
+        assert len(await backend.histories.list_all()) == 1
+
+
+async def _create_history(storage: Storage, student_id: PersonId) -> AcademicHistory:
+    """One transaction's worth of ``get_or_create``, for the racing test above."""
+    async with storage.transaction() as backend:
+        return await backend.histories.get_or_create(student_id)
