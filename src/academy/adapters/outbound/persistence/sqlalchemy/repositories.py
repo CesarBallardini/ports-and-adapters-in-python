@@ -123,6 +123,18 @@ class _SqlAlchemyRepository[EntityT, IdT](ABC):
     async def save(self, entity: EntityT) -> None:
         """Persist changes to an already-stored aggregate.
 
+        **A concurrent save overwrites rather than merges, and that is a known defect.** An
+        ADR-0017 collection is written whole, so two units of work that both read an aggregate,
+        each append to it and each save will keep only the second one's addition -- silently, with
+        both callers told their write succeeded. It is pinned deterministically by
+        ``test_a_concurrent_writer_still_overwrites_the_other``, which is written to expire.
+
+        Fixing it means optimistic concurrency: SQLAlchemy's ``version_id_col`` turns this into
+        ``UPDATE ... WHERE id = ? AND version = ?`` and raises ``StaleDataError`` on a stale write,
+        which becomes the ``ConflictError`` the port already promises. Plain SQL, so it behaves the
+        same on both dialects -- row locking would not, and ``SELECT ... FOR UPDATE`` is a no-op on
+        SQLite, which would leave the test green and the defect in place.
+
         Raises:
             NotFoundError: If no aggregate with that identity is stored.
             ConflictError: If the change violates a uniqueness constraint.

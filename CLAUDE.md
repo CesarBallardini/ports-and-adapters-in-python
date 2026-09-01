@@ -180,6 +180,20 @@ Two adapters, one contract suite, and a rule that shapes both.
   session, because the identity map returns the very object that was mutated — which is why the
   contract suite's last six tests commit, drop the session, and ask again.
 
+- **A concurrent `save` overwrites rather than merges — a known, documented defect.** The same
+  whole-column write that makes `flag_modified` necessary makes the read-modify-write a lost
+  update: two units of work read one aggregate, each append, each `save`, and only the second
+  addition survives — silently, with both callers told their write succeeded. It is *not* the
+  get-or-create race and the SAVEPOINT does not touch it; it happens with a row that already
+  exists, and it is not a SQLite quirk: the `UPDATE` is unconditional, so under READ COMMITTED
+  PostgreSQL applies the value the loser read before the winner committed, exactly the same way.
+  `test_a_concurrent_writer_still_overwrites_the_other` pins it deterministically and is written
+  to expire — when it fails, delete it. Fixing it means optimistic concurrency
+  (`version_id_col`, a version column per aggregate, `StaleDataError` becoming `ConflictError`),
+  which is plain SQL and so behaves the same on both dialects. **Do not reach for row locking**:
+  `SELECT ... FOR UPDATE` is a no-op on SQLite, so it would leave the contract suite green while
+  fixing nothing that ships.
+
 ## Inbound adapters
 
 Two exist — the CLI and the web adapter — and the second one is why the first one's rules are
